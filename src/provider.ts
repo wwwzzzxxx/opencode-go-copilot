@@ -10,18 +10,18 @@ import {
     Progress,
 } from "vscode";
 
-import * as path from "path";
-
 import type { ModelPreset, OpenCodeGoModelItem } from "./types";
 
 import { createRetryConfig, executeWithRetry, convertToolsToOpenAI } from "./utils";
 import { getCatalogProviderBaseUrl } from "./modelsDev";
+import { resolveBaseUrl } from "./proxyManager";
+import { createVpnAwareFetch } from "./vpnProxy";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
 import { getCatalogModelConfig, resolveProviderForModelId, resolveVisionProxyModelId } from "./catalogModels";
 import { l10nFormat } from "./localize";
 import { countMessageTokens, textTokenLength } from "./provideToken";
-import { updateContextStatusBar, recordUsage, updateCumulativeTooltip, updateStatusBarWithApiPrompt } from "./statusBar";
+import { updateContextStatusBar, recordUsage, recordFreeModelCall, updateCumulativeTooltip, updateStatusBarWithApiPrompt } from "./statusBar";
 import { OpenaiApi } from "./openai/openaiApi";
 import { AnthropicApi } from "./anthropic/anthropicApi";
 import type { AnthropicRequestBody } from "./anthropic/anthropicTypes";
@@ -94,24 +94,6 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
         private readonly secrets: vscode.SecretStorage,
         private readonly statusBarItem: vscode.StatusBarItem
     ) { }
-
-    /**
-     * Create an undici fetch function with custom bodyTimeout to prevent premature
-     * connection termination during long streaming responses.
-     * Falls back to global fetch if undici is unavailable.
-     */
-    private _createFetchWithTimeout(requestTimeoutMs: number): typeof fetch {
-        try {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const undici = require(path.join(vscode.env.appRoot, 'node_modules', 'undici'));
-            const agent = new undici.Agent({ bodyTimeout: requestTimeoutMs });
-            return (url: RequestInfo | URL, init?: RequestInit) => {
-                return undici.fetch(url, { ...init, dispatcher: agent });
-            };
-        } catch {
-            return fetch;
-        }
-    }
 
     /**
      * Get the list of available language models contributed by this provider.
@@ -230,7 +212,11 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
             // Determine API mode from model config (default: openai)
             const apiMode = um?.apiMode || "openai";
-            const baseUrl = um?.baseUrl || getCatalogProviderBaseUrl("opencode-go", "https://opencode.ai/zen/go/v1/");
+            const providerId = resolveProviderForModelId(model.id);
+            const directBaseUrl = um?.baseUrl || getCatalogProviderBaseUrl(providerId, providerId === "opencode" ? "https://opencode.ai/zen/v1/" : "https://opencode.ai/zen/go/v1/");
+            // In the remote (SSH) host, route through the SSH tunnel to the local proxy when reachable.
+            // VPN models (muse/gpt/...) are forced through the tunnel regardless of localProxyMode.
+            const baseUrl = await resolveBaseUrl(providerId, directBaseUrl, model.id);
 
             logger.info("request.start", {
                 modelId: model.id,
@@ -311,7 +297,8 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                 });
             }
             // Create undici fetch with custom bodyTimeout (extends TCP idle timeout during streaming)
-            dispatchFetch = this._createFetchWithTimeout(requestTimeoutMs);
+            // and VPN-aware routing for overseas models.
+            dispatchFetch = createVpnAwareFetch(model.id, requestTimeoutMs);
 
             // Prepare headers with custom headers if specified
             const requestHeaders = CommonApi.prepareHeaders(modelApiKey, apiMode, um?.headers);
@@ -409,6 +396,8 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     recordUsage(anthropicUsage, um?.cost);
                     updateStatusBarWithApiPrompt(this.statusBarItem);
                 }
+                // Count the call toward the free model daily quota display
+                recordFreeModelCall(model.id);
             } else {
                 // OpenAI Chat Completions API mode
                 const openaiApi = new OpenaiApi(model.id);
@@ -438,6 +427,42 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
                 // Send chat request with retry
                 const url = `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
+                // Detailed muse diagnostics: always log at info so it survives log-level filtering
+                try {
+                    const msgs = (requestBody as { messages?: unknown }).messages as unknown[] | undefined;
+                    let hasImage = false;
+                    let imageMime = "";
+                    let imageLen = 0;
+                    if (Array.isArray(msgs)) {
+                        for (const m of msgs) {
+                            const c = (m as { content?: unknown }).content;
+                            if (Array.isArray(c)) {
+                                for (const p of c as Array<{ type?: string; image_url?: { url?: string } }>) {
+                                    if (p?.type === "image_url" && typeof p.image_url?.url === "string") {
+                                        hasImage = true;
+                                        const u = p.image_url.url;
+                                        imageLen = u.length;
+                                        const mm = u.match(/^data:([^;]+);base64,/);
+                                        imageMime = mm ? mm[1] : "unknown";
+                                        break;
+                                    }
+                                }
+                            }
+                            if (hasImage) break;
+                        }
+                    }
+                    const tools = (requestBody as { tools?: unknown[] }).tools;
+                    logger.info("request.museDiag", {
+                        modelId: model.id,
+                        hasImage,
+                        imageMime,
+                        imageLen,
+                        thinking: (requestBody as Record<string, unknown>).thinking,
+                        reasoning_effort: (requestBody as Record<string, unknown>).reasoning_effort,
+                        toolCount: Array.isArray(tools) ? tools.length : 0,
+                        toolChoice: (requestBody as Record<string, unknown>).tool_choice,
+                    });
+                } catch { /* ignore */ }
                 logger.debug("request.body", { url, requestBody });
                 const response = await executeWithRetry(async () => {
                     const res = await dispatchFetch(url, {
@@ -492,6 +517,8 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     recordUsage(openaiUsage, um?.cost);
                     updateStatusBarWithApiPrompt(this.statusBarItem);
                 }
+                // Count the call toward the free model daily quota display
+                recordFreeModelCall(model.id);
             }
 
             // Fallback: if API did not return usage data, use client-side calculation for native indicator
