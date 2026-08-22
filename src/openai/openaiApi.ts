@@ -45,6 +45,14 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
     }
 
     /**
+     * Whether the last streamed response was silently truncated by the upstream:
+     * the stream ended with no [DONE] marker and no finish_reason (server closed
+     * the SSE mid-flight). Used by the provider to auto-retry with a lower
+     * reasoning effort. Reset to false by _resetStreamState.
+     */
+    public lastStreamTruncated = false;
+
+    /**
      * Whether images were found during convertMessages for ask_image tool.
      */
     private _hasImages = false;
@@ -466,6 +474,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
         // Reset mutable state to prevent carryover from previous rounds
         this._resetStreamState();
+        this.lastStreamTruncated = false;
         // Record the baseline of _capturedReasoningContent (NOT reset by _resetStreamState
         // because it must persist across ask_image sub-rounds). Delta = per-round thinking.
         this._thinkingCharsAtStart = this._capturedReasoningContent.length;
@@ -474,6 +483,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
         const decoder = new TextDecoder();
         let buffer = "";
         let cancelDisposable: vscode.Disposable | undefined;
+        let sawDone = false;
 
         // Immediately cancel the stream when user cancels, so reader.read() won't stay pending
         if (token.onCancellationRequested) {
@@ -504,6 +514,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                     const data = line.slice(5).trim();
                     logger.debug("openai.stream.chunk", { modelId, data });
                     if (data === "[DONE]") {
+                        sawDone = true;
                         await this.flushToolCallBuffers(progress, false);
                         continue;
                     }
@@ -558,9 +569,18 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                 }
             }
             logger.debug("openai.stream.done", { modelId });
+            // Silent truncation detection: the stream ended WITHOUT [DONE] and WITHOUT a
+            // non-null finish_reason. The zen/go gateway (or upstream) closed the SSE
+            // stream mid-flight with no completion signal — the server never "finished"
+            // this generation (observed with deepseek-v4-flash-vision-exp + effort=max:
+            // ~40s of reasoning_content then pure EOF, no finish_reason, no [DONE]).
+            const truncated = !sawDone && this._lastFinishReason === undefined;
+            this.lastStreamTruncated = truncated;
             logger.info("openai.stream.end", {
                 modelId,
                 finishReason: this._lastFinishReason,
+                sawDone,
+                truncated,
                 textChars: this._emittedTextChars,
                 thinkingChars: this._capturedReasoningContent.length - this._thinkingCharsAtStart,
                 emittedText: this._hasEmittedText,
@@ -570,6 +590,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                 bufferedToolCalls: this._toolCallBuffers.size,
             });
         } catch (e) {
+            this.lastStreamTruncated = false;
             console.error("[OpenCodeGo] Streaming response error:", e);
             logger.error("openai.stream.error", { modelId, error: e instanceof Error ? e.message : String(e) });
             throw e;
