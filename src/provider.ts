@@ -128,16 +128,9 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
     ): Promise<void> {
         let usageReportedDuringStream = false;
         const collectedOutputText: string[] = [];
-        // When the upstream stream is silently truncated and we retry with a lower
-        // reasoning effort, the first round's parts were already reported to chat.
-        // Drop all parts during the retry round so the user doesn't see duplicates.
-        let dropProgressParts = false;
         const trackingProgress: Progress<LanguageModelResponsePart> = {
             report: (part) => {
                 try {
-                    if (dropProgressParts) {
-                        return;
-                    }
                     if (part instanceof vscode.LanguageModelTextPart) {
                         collectedOutputText.push(part.value);
                     }
@@ -467,113 +460,75 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
                 requestBody = openaiApi.prepareRequestBody(requestBody, um, options);
 
-                // Send chat request with retry. If the upstream silently truncates the
-                // stream (EOF with no [DONE] / no finish_reason — observed with
-                // deepseek-v4-flash-vision-exp + effort=max), retry ONCE with a lower
-                // reasoning effort. The current round's progress parts have already
-                // been emitted to chat, so on retry we must not re-emit them: the
-                // trackingProgress wrapper drops parts after the first round emits.
-                for (let attempt = 0; attempt < 2; attempt++) {
-                    const url = `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
-                    // Detailed muse diagnostics
-                    try {
-                        const msgs = (requestBody as { messages?: unknown }).messages as unknown[] | undefined;
-                        let hasImage = false;
-                        let imageMime = "";
-                        let imageLen = 0;
-                        if (Array.isArray(msgs)) {
-                            for (const m of msgs) {
-                                const c = (m as { content?: unknown }).content;
-                                if (Array.isArray(c)) {
-                                    for (const p of c as Array<{ type?: string; image_url?: { url?: string } }>) {
-                                        if (p?.type === "image_url" && typeof p.image_url?.url === "string") {
-                                            hasImage = true;
-                                            const u = p.image_url.url;
-                                            imageLen = u.length;
-                                            const mm = u.match(/^data:([^;]+);base64,/);
-                                            imageMime = mm ? mm[1] : "unknown";
-                                            break;
-                                        }
+                // Send chat request with retry
+                const url = `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
+                // Detailed muse diagnostics: always log at info so it survives log-level filtering
+                try {
+                    const msgs = (requestBody as { messages?: unknown }).messages as unknown[] | undefined;
+                    let hasImage = false;
+                    let imageMime = "";
+                    let imageLen = 0;
+                    if (Array.isArray(msgs)) {
+                        for (const m of msgs) {
+                            const c = (m as { content?: unknown }).content;
+                            if (Array.isArray(c)) {
+                                for (const p of c as Array<{ type?: string; image_url?: { url?: string } }>) {
+                                    if (p?.type === "image_url" && typeof p.image_url?.url === "string") {
+                                        hasImage = true;
+                                        const u = p.image_url.url;
+                                        imageLen = u.length;
+                                        const mm = u.match(/^data:([^;]+);base64,/);
+                                        imageMime = mm ? mm[1] : "unknown";
+                                        break;
                                     }
                                 }
-                                if (hasImage) break;
                             }
+                            if (hasImage) break;
                         }
-                        const tools = (requestBody as { tools?: unknown[] }).tools;
-                        if (vscode.workspace.getConfiguration("opencodego").get<boolean>("verboseLogging", false)) logger.info("request.museDiag", {
-                            modelId: model.id,
-                            attempt,
-                            hasImage,
-                            imageMime,
-                            imageLen,
-                            thinking: (requestBody as Record<string, unknown>).thinking,
-                            reasoning_effort: (requestBody as Record<string, unknown>).reasoning_effort,
-                            toolCount: Array.isArray(tools) ? tools.length : 0,
-                            toolChoice: (requestBody as Record<string, unknown>).tool_choice,
-                            maxTokens: (requestBody as Record<string, unknown>).max_tokens
-                                ?? (requestBody as Record<string, unknown>).max_completion_tokens,
-                        });
-                    } catch { /* ignore */ }
-                    logger.debug("request.body", { url, requestBody, attempt });
-                    const response = await executeWithRetry(async () => {
-                        const res = await dispatchFetch(url, {
-                            method: "POST",
-                            headers: requestHeaders,
-                            body: JSON.stringify(requestBody),
-                            signal: abortController.signal,
-                        });
+                    }
+                    const tools = (requestBody as { tools?: unknown[] }).tools;
+                    if (vscode.workspace.getConfiguration("opencodego").get<boolean>("verboseLogging", false)) logger.info("request.museDiag", {
+                        modelId: model.id,
+                        hasImage,
+                        imageMime,
+                        imageLen,
+                        thinking: (requestBody as Record<string, unknown>).thinking,
+                        reasoning_effort: (requestBody as Record<string, unknown>).reasoning_effort,
+                        toolCount: Array.isArray(tools) ? tools.length : 0,
+                        toolChoice: (requestBody as Record<string, unknown>).tool_choice,
+                        maxTokens: (requestBody as Record<string, unknown>).max_tokens
+                            ?? (requestBody as Record<string, unknown>).max_completion_tokens,
+                    });
+                } catch { /* ignore */ }
+                logger.debug("request.body", { url, requestBody });
+                const response = await executeWithRetry(async () => {
+                    const res = await dispatchFetch(url, {
+                        method: "POST",
+                        headers: requestHeaders,
+                        body: JSON.stringify(requestBody),
+                        signal: abortController.signal,
+                    });
 
-                        if (!res.ok) {
-                            const errorText = await res.text();
-                            console.error("[OpenCodeGo] API error response", errorText);
-                            // Detect content moderation rejection for images — skip retries, this won't recover
-                            if (errorText.includes("image is sensitive")) {
-                                throw new Error(`IMAGE_SENSITIVE: ${errorText}`);
-                            }
-                            throw new Error(
-                                `API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
-                            );
+                    if (!res.ok) {
+                        const errorText = await res.text();
+                        console.error("[OpenCodeGo] API error response", errorText);
+                        // Detect content moderation rejection for images — skip retries, this won't recover
+                        if (errorText.includes("image is sensitive")) {
+                            throw new Error(`IMAGE_SENSITIVE: ${errorText}`);
                         }
-
-                        return res;
-                    }, retryConfig);
-
-                    if (!response.body) {
-                        throw new Error("No response body from API");
+                        throw new Error(
+                            `API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
+                        );
                     }
 
-                    await openaiApi.processStreamingResponse(response.body, trackingProgress, token);
+                    return res;
+                }, retryConfig);
 
-                    if (attempt === 0 && openaiApi.lastStreamTruncated) {
-                        // Silent truncation: retry once with a lower reasoning effort.
-                        logger.warn("stream.truncated.retry", {
-                            modelId: model.id,
-                            effort: (requestBody as Record<string, unknown>).reasoning_effort,
-                        });
-                        // First round already reported parts; drop duplicates on retry.
-                        dropProgressParts = true;
-                        // Downgrade effort: max -> high -> medium, or "enabled" -> medium
-                        const currentEffort = um?.reasoning_effort;
-                        if (currentEffort === "max") {
-                            um = { ...um, reasoning_effort: "high" };
-                        } else if (currentEffort === "high") {
-                            um = { ...um, reasoning_effort: "medium" };
-                        } else if (currentEffort === "medium") {
-                            um = { ...um, reasoning_effort: "low" };
-                        } else {
-                            um = { ...um, reasoning_effort: "medium" };
-                        }
-                        requestBody = {
-                            model: um?.id ?? model.id,
-                            messages: openaiMessages,
-                            stream: true,
-                            stream_options: { include_usage: true },
-                        };
-                        requestBody = openaiApi.prepareRequestBody(requestBody, um, options);
-                        continue;
-                    }
-                    break;
+                if (!response.body) {
+                    throw new Error("No response body from API");
                 }
+
+                await openaiApi.processStreamingResponse(response.body, trackingProgress, token);
 
                 // --- Second round: handle ask_image tool call interception ---
                 // Clear the first-round timeout before starting the second round
