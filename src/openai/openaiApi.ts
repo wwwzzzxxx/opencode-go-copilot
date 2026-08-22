@@ -466,6 +466,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
         // Reset mutable state to prevent carryover from previous rounds
         this._resetStreamState();
+        // Record the baseline of _capturedReasoningContent (NOT reset by _resetStreamState
+        // because it must persist across ask_image sub-rounds). Delta = per-round thinking.
+        this._thinkingCharsAtStart = this._capturedReasoningContent.length;
 
         const reader = responseBody.getReader();
         const decoder = new TextDecoder();
@@ -559,7 +562,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                 modelId,
                 finishReason: this._lastFinishReason,
                 textChars: this._emittedTextChars,
-                thinkingChars: this._capturedReasoningContent.length,
+                thinkingChars: this._capturedReasoningContent.length - this._thinkingCharsAtStart,
                 emittedText: this._hasEmittedText,
                 emittedAssistantText: this._hasEmittedAssistantText,
                 emittedThinking: this._hasEmittedThinking,

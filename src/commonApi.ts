@@ -49,6 +49,9 @@ export abstract class CommonApi<TMessage, TRequestBody> {
     /** Total characters of assistant text emitted during the last stream. */
     protected _emittedTextChars = 0;
 
+    /** Length of _capturedReasoningContent at stream start (for per-round delta). */
+    protected _thinkingCharsAtStart = 0;
+
     /** Track if we emitted the begin-tool-calls whitespace flush. */
     protected _emittedBeginToolCallsHint = false;
 
