@@ -1473,6 +1473,9 @@ node scripts/update-hardcoded-catalog.mjs
 # 打包 VSIX
 npm run build
 # 等效于: npx @vscode/vsce package -o extension.vsix
+# ⚠️ 切勿加 --no-dependencies：会漏掉 @microsoft/tiktokenizer（dependencies 唯一运行时依赖），
+#    安装后 activate() 在注册命令前抛 Cannot find module '@microsoft/tiktokenizer' 崩溃，
+#    表现为所有 opencodego.* 命令 not found。测试窗口读源码 out/ 有 node_modules 所以正常。
 ```
 
 ### 5.2 编译配置 (tsconfig.json)

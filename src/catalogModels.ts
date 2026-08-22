@@ -61,7 +61,7 @@ export interface ModelMeta {
     defaultReasoningEffort: string;
     contextLength: number;
     maxOutputTokens: number;
-    apiMode: "openai" | "anthropic";
+    apiMode: "openai" | "anthropic" | "openai-responses";
     supportsTemperature: boolean;
     toolCalling: boolean;
     baseUrl: string;

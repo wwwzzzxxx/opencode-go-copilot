@@ -15,6 +15,7 @@
  *--------------------------------------------------------------------------------------------*/
 import * as path from "path";
 import * as vscode from "vscode";
+import { isRemote } from "./proxyManager";
 import { logger } from "./logger";
 
 /** Default proxy endpoint (Clash / v2rayN style local HTTP proxy). */
@@ -77,8 +78,8 @@ export function createVpnAwareFetch(
     // and the local proxy decides whether to route via VPN.
     // Applying VPN proxy on the remote side would try to reach 127.0.0.1:7890
     // on the REMOTE machine, which doesn't have Clash running.
-    const isRemote = vscode.env.remoteName !== undefined;
-    if (isRemote) {
+    const remote = isRemote();
+    if (remote) {
         logger.info("vpn.route", { modelId, action: "tunnel-plain" });
         // Return a plain undici fetch with body timeout (no VPN agent)
         try {
@@ -122,7 +123,7 @@ export function createVpnAwareFetch(
                 });
                 proxyAgentCache.set(proxyUrl, agent);
             }
-            logger.info("vpn.route", { modelId, proxyUrl, action: "proxy" });
+            logger.info("vpn.route", { modelId, proxyUrl, action: "proxy", isRemote: remote });
             return (url: RequestInfo | URL, init?: RequestInit) => {
                 return undici.fetch(url, { ...init, dispatcher: agent });
             };

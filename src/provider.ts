@@ -14,14 +14,14 @@ import type { ModelPreset, OpenCodeGoModelItem } from "./types";
 
 import { createRetryConfig, executeWithRetry, convertToolsToOpenAI } from "./utils";
 import { getCatalogProviderBaseUrl } from "./modelsDev";
-import { resolveBaseUrl } from "./proxyManager";
+import { resolveBaseUrl, clearTunnelProbeCache } from "./proxyManager";
 import { createVpnAwareFetch } from "./vpnProxy";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
 import { getCatalogModelConfig, resolveProviderForModelId, resolveVisionProxyModelId } from "./catalogModels";
 import { l10nFormat } from "./localize";
 import { countMessageTokens, textTokenLength } from "./provideToken";
-import { updateContextStatusBar, recordUsage, recordFreeModelCall, updateCumulativeTooltip, updateStatusBarWithApiPrompt } from "./statusBar";
+import { updateContextStatusBar, recordUsage, updateCumulativeTooltip, updateStatusBarWithApiPrompt } from "./statusBar";
 import { OpenaiApi } from "./openai/openaiApi";
 import { AnthropicApi } from "./anthropic/anthropicApi";
 import type { AnthropicRequestBody } from "./anthropic/anthropicTypes";
@@ -299,6 +299,42 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
             // Create undici fetch with custom bodyTimeout (extends TCP idle timeout during streaming)
             // and VPN-aware routing for overseas models.
             dispatchFetch = createVpnAwareFetch(model.id, requestTimeoutMs);
+            // Tunnel fallback: if we are using the SSH tunnel and it fails (local proxy not running),
+            // clear the probe cache and retry with direct URL once. This makes single-window SSH
+            // more robust and provides a better error if direct also fails.
+            {
+                const _tunnelBase = baseUrl;
+                const _directBase = directBaseUrl;
+                if (_tunnelBase !== _directBase && _tunnelBase.includes("127.0.0.1:8900")) {
+                    const _origFetch = dispatchFetch;
+                    const _fallbackFetch = _origFetch; // same dispatcher, different URL
+                    dispatchFetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+                        const urlStr = typeof url === "string" ? url : url.toString();
+                        const isTunnelUrl = urlStr.includes("127.0.0.1:8900");
+                        try {
+                            return await _origFetch(url, init);
+                        } catch (e) {
+                            const msg = e instanceof Error ? e.message : String(e);
+                            const isNetErr = msg.toLowerCase().includes("fetch failed") || msg.toLowerCase().includes("econnrefused") || msg.toLowerCase().includes("econnreset");
+                            if (isTunnelUrl && isNetErr) {
+                                logger.warn("request.tunnelFallback", { modelId: model.id, url: urlStr, error: msg });
+                                clearTunnelProbeCache();
+                                const fallbackUrl = urlStr.replace(_tunnelBase, _directBase);
+                                if (fallbackUrl !== urlStr) {
+                                    logger.info("request.fallbackDirect", { from: urlStr, to: fallbackUrl });
+                                    try {
+                                        return await _fallbackFetch(fallbackUrl as any, init);
+                                    } catch (e2) {
+                                        // throw original error with context
+                                        throw e;
+                                    }
+                                }
+                            }
+                            throw e;
+                        }
+                    }) as typeof fetch;
+                }
+            }
 
             // Prepare headers with custom headers if specified
             const requestHeaders = CommonApi.prepareHeaders(modelApiKey, apiMode, um?.headers);
@@ -397,7 +433,6 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     updateStatusBarWithApiPrompt(this.statusBarItem);
                 }
                 // Count the call toward the free model daily quota display
-                recordFreeModelCall(model.id);
             } else {
                 // OpenAI Chat Completions API mode
                 const openaiApi = new OpenaiApi(model.id);
@@ -452,7 +487,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                         }
                     }
                     const tools = (requestBody as { tools?: unknown[] }).tools;
-                    logger.info("request.museDiag", {
+                    if (vscode.workspace.getConfiguration("opencodego").get<boolean>("verboseLogging", false)) logger.info("request.museDiag", {
                         modelId: model.id,
                         hasImage,
                         imageMime,
@@ -518,7 +553,6 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     updateStatusBarWithApiPrompt(this.statusBarItem);
                 }
                 // Count the call toward the free model daily quota display
-                recordFreeModelCall(model.id);
             }
 
             // Fallback: if API did not return usage data, use client-side calculation for native indicator

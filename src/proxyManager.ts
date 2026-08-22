@@ -39,6 +39,9 @@ const UPSTREAMS: Record<string, { host: string; pathPrefix: string; https: boole
 
 /** A single active upstream server we might be proxying to. */
 let upstreamServer: http.Server | undefined;
+// Keep reference on globalThis so single SSH window's UI host proxy survives
+const g: any = globalThis as any;
+if (!g.__opencodeProxy) g.__opencodeProxy = { server: undefined as http.Server | undefined };
 
 /** Cache of the last probe result to avoid hammering 127.0.0.1 on every request. */
 let probeResult: { reachable: boolean; at: number } | undefined;
@@ -51,7 +54,14 @@ const PROBE_TTL_MS = 5000;
  * (e.g. "ssh-remote"), while the LOCAL host (even in an SSH window) has `undefined`.
  */
 export function isRemote(): boolean {
-    return vscode.env.remoteName !== undefined;
+    if (vscode.env.remoteName === undefined) {
+        return false;
+    }
+    const ipcHook = (process.env.VSCODE_IPC_HOOK || process.env.VSCODE_IPC_HOOK_CLI || '') as string;
+    if (ipcHook.includes('.vscode-server') || ipcHook.includes('vscode-remote')) {
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -106,12 +116,12 @@ export async function resolveBaseUrl(
 
     const reachable = await isTunnelReachable();
     if (!reachable) {
-        logger.info("tunnel.probe", { providerId, modelId, reachable, action: "direct" });
+        if (isVerboseEnabled()) logger.info("tunnel.probe", { providerId, modelId, reachable, action: "direct" }); else logger.debug("tunnel.probe", { providerId, modelId, reachable, action: "direct" });
         return directUrl;
     }
 
     const tunnelBase = `http://127.0.0.1:${PROXY_PORT}${upstream.pathPrefix}/`;
-    logger.info("tunnel.probe", { providerId, modelId, reachable, action: "tunnel", tunnelBase });
+    if (isVerboseEnabled()) logger.info("tunnel.probe", { providerId, modelId, reachable, action: "tunnel", tunnelBase }); else logger.debug("tunnel.probe", { providerId, modelId, reachable, action: "tunnel", tunnelBase });
     return tunnelBase;
 }
 
@@ -119,13 +129,19 @@ export async function resolveBaseUrl(
  * Probe 127.0.0.1:PROXY_PORT to see if the SSH RemoteForward tunnel is up.
  * Results are cached for a short window.
  */
+/**
+ * Probe 127.0.0.1:PROXY_PORT to see if the SSH RemoteForward tunnel is up
+ * AND the local proxy is actually serving (not just sshd listening).
+ * Results are cached for a short window. We do a TCP connect first, then
+ * an HTTP health check to ensure the local proxy responds.
+ */
 export async function isTunnelReachable(): Promise<boolean> {
     const now = Date.now();
     if (probeResult && now - probeResult.at < PROBE_TTL_MS) {
         return probeResult.reachable;
     }
 
-    const reachable = await new Promise<boolean>((resolve) => {
+    const tcpReachable = await new Promise<boolean>((resolve) => {
         const socket = net.connect({ host: "127.0.0.1", port: PROXY_PORT }, () => {
             socket.destroy();
             resolve(true);
@@ -138,8 +154,33 @@ export async function isTunnelReachable(): Promise<boolean> {
         socket.on("error", () => resolve(false));
     });
 
-    probeResult = { reachable, at: Date.now() };
-    return reachable;
+    if (!tcpReachable) {
+        probeResult = { reachable: false, at: Date.now() };
+        return false;
+    }
+
+    // TCP is up — verify it's our proxy (not just sshd's listener) via health endpoint
+    try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 900);
+        const res = await fetch("http://127.0.0.1:" + PROXY_PORT + "/health", { signal: controller.signal } as any);
+        clearTimeout(t);
+        const reachable = (res as any).ok === true;
+        probeResult = { reachable, at: Date.now() };
+        if (!reachable) {
+            logger.debug("tunnel.probe.healthFailed", { status: (res as any).status });
+        }
+        return reachable;
+    } catch (e) {
+        probeResult = { reachable: false, at: Date.now() };
+        logger.debug("tunnel.probe.healthError", { error: String(e) });
+        return false;
+    }
+}
+
+/** Clear the tunnel probe cache — call after proxy start to force re-check. */
+export function clearTunnelProbeCache(): void {
+    probeResult = undefined;
 }
 
 /**
@@ -152,9 +193,15 @@ export async function isTunnelReachable(): Promise<boolean> {
  *   - forwards them (with auth headers) to the correct upstream based on path prefix
  *   - streams the response back
  */
+function isVerboseEnabled(): boolean { try { return vscode.workspace.getConfiguration("opencodego").get<boolean>("verboseLogging", false) === true; } catch { return false; } }
+
 export async function maybeStartLocalProxy(secrets: vscode.SecretStorage): Promise<void> {
-    // Only the local (UI) host should own the proxy.
-    if (isRemote()) {
+    const remote = isRemote();
+    const ipcHook = (process.env.VSCODE_IPC_HOOK || process.env.VSCODE_IPC_HOOK_CLI || "") as string;
+    console.log("[proxy] maybeStart", { isRemote: remote, remoteName: vscode.env.remoteName ?? null, ipcHook: ipcHook.slice(0, 100), hasVpn: hasVpnRules(), mode: getLocalProxyMode(), platform: process.platform });
+    logger.info("proxy.maybeStart", { isRemote: remote, remoteName: vscode.env.remoteName ?? null, ipcHook: ipcHook.slice(0, 100), hasVpn: hasVpnRules(), mode: getLocalProxyMode(), platform: process.platform });
+    // Only the REMOTE host should skip — the local UI host (even in an SSH window) must own the proxy.
+    if (remote) {
         logger.info("proxy.skip", { reason: "remote-host" });
         return;
     }
@@ -166,19 +213,26 @@ export async function maybeStartLocalProxy(secrets: vscode.SecretStorage): Promi
         logger.info("proxy.skip", { reason: "mode-none" });
         return;
     }
-    // If something already listens on our port (e.g. a previous instance), reuse it.
-    if (await isTunnelReachable()) {
-        logger.info("proxy.skip", { reason: "already-listening" });
+
+    // If we already have a listening server in this host, reuse it
+    if (g.__opencodeProxy.server?.listening) {
+        logger.info("proxy.skip", { reason: "already-listening-global", port: PROXY_PORT, pid: process.pid });
+        upstreamServer = g.__opencodeProxy.server;
         return;
+    }
+    // Clear stale reference if global holds a non-listening server
+    if (g.__opencodeProxy.server && !g.__opencodeProxy.server.listening) {
+        g.__opencodeProxy.server = undefined;
+        upstreamServer = undefined;
     }
 
     const apiKey = await secrets.get("opencodego.apiKey");
     if (apiKey) {
-        // We use the key on-demand per request too; nothing to cache here.
         void apiKey;
     }
 
-    upstreamServer = http.createServer((req, res) => {
+    // Create server (don't assign to global yet — only on successful listen)
+    const server = http.createServer((req, res) => {
         handleProxyRequest(req, res).catch((err) => {
             logger.error("proxy.request.failed", { error: String(err) });
             if (!res.headersSent) {
@@ -190,16 +244,32 @@ export async function maybeStartLocalProxy(secrets: vscode.SecretStorage): Promi
         });
     });
 
-    upstreamServer.on("error", (err) => {
+    server.on("error", (err: any) => {
+        // Global error handler for runtime errors after listen
         logger.error("proxy.server.error", { error: String(err) });
     });
 
     await new Promise<void>((resolve, reject) => {
-        upstreamServer!.listen(PROXY_PORT, "127.0.0.1", () => {
-            logger.info("proxy.started", { port: PROXY_PORT, host: "127.0.0.1" });
+        const onError = (err: any) => {
+            if (err?.code === "EADDRINUSE") {
+                // Something else already binds 8900 — could be another VS Code window's proxy
+                logger.info("proxy.skip", { reason: "already-listening", port: PROXY_PORT, pid: process.pid });
+                resolve();
+                return;
+            }
+            logger.error("proxy.server.error", { error: String(err), code: err?.code, port: PROXY_PORT });
+            reject(err);
+        };
+        server.once("error", onError);
+        server.listen(PROXY_PORT, "127.0.0.1", () => {
+            server.off("error", onError);
+            upstreamServer = server;
+            g.__opencodeProxy.server = server;
+            try { (server as any).unref?.(); } catch {}
+            logger.info("proxy.started", { port: PROXY_PORT, host: "127.0.0.1", pid: process.pid });
+            clearTunnelProbeCache();
             resolve();
         });
-        upstreamServer!.once("error", reject);
     });
 }
 
@@ -208,6 +278,12 @@ async function handleProxyRequest(
     res: http.ServerResponse
 ): Promise<void> {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    // Health endpoint for tunnel probe — must respond quickly without body buffering
+    if (url.pathname === "/health" || url.pathname === "/__health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, port: PROXY_PORT }));
+        return;
+    }
     // Determine upstream from the path prefix: /zen/v1/... or /zen/go/v1/...
     let upstream: (typeof UPSTREAMS)[keyof typeof UPSTREAMS] | undefined;
     if (url.pathname.startsWith("/zen/go/v1")) {
@@ -237,7 +313,7 @@ async function handleProxyRequest(
 
     const useVpn = shouldUseVpnProxy(modelId);
     const vpnUrl = getVpnProxyUrl();
-    logger.info("proxy.route", { modelId, useVpn, vpnUrl });
+    if (isVerboseEnabled()) logger.info("proxy.route", { modelId, useVpn, vpnUrl }); else logger.debug("proxy.route", { modelId, useVpn });
 
     if (useVpn && vpnUrl) {
         // Route through the local VPN proxy (HTTP proxy). For HTTPS upstreams the

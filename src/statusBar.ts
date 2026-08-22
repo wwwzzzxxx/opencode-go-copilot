@@ -6,6 +6,7 @@ import { logger } from "./logger";
 import type { StreamUsage } from "./commonApi";
 import {
     formatResetDuration,
+    formatResetTime,
     getUsageSnapshot,
     getGoUsageCached,
     type GoUsageResult,
@@ -255,12 +256,14 @@ export function recordUsage(usage: StreamUsage, cost?: ModelCost): void {
     }
     if (cost) {
         const cacheHit = usage.cacheHitTokens ?? 0;
-        const cacheMiss = usage.cacheMissTokens ?? 0;
+        // Align with opencode session cost: tokens.input = non-cached input (prompt - cacheHit), not total prompt
+        // Previous formula double-counted cacheMiss (prompt*input + cacheMiss*input)
+        const hasCache = usage.cacheHitTokens !== undefined;
+        const nonCachedInput = hasCache ? (usage.cacheMissTokens ?? (usage.promptTokens - cacheHit)) : usage.promptTokens;
         cumulativeCost +=
-            (usage.promptTokens * cost.input) / 1_000_000 +
+            (nonCachedInput * cost.input) / 1_000_000 +
             (usage.completionTokens * cost.output) / 1_000_000 +
-            (cacheHit * cost.cache_read) / 1_000_000 +
-            (cacheMiss * cost.input) / 1_000_000;
+            (cacheHit * cost.cache_read) / 1_000_000;
         cumulativeSaved += (cacheHit * (cost.input - cost.cache_read)) / 1_000_000;
     }
 }
@@ -280,17 +283,21 @@ function appendGoUsageTooltipLines(lines: string[]): void {
         return;
     }
     const windows: Array<[string, GoUsageWindow | undefined]> = [
-        ["5H", usage.rolling],
-        [l10n("Week"), usage.weekly],
-        [l10n("Month"), usage.monthly],
+        ["5h:", usage.rolling],
+        [`${l10n("Week")}:`, usage.weekly],
+        [`${l10n("Month")}:`, usage.monthly],
     ];
     const present = windows.filter((entry): entry is [string, GoUsageWindow] => entry[1] !== undefined);
     if (present.length === 0) {
         return;
     }
 
-    for (const [label, window] of present) {
-        lines.push(`<div>${label}——${Math.round(window.percent)}%</div>`);
+    for (let i = 0; i < present.length; i++) {
+        const [label, window] = present[i];
+        const t = window.resetsAt ? formatResetTime(window.resetsAt) : "";
+        const suffix = t ? `(${t})` : "";
+        const trailing = i < present.length - 1 ? "&#x20;" : "";
+        lines.push(`<div style="white-space:pre">${label}\t${Math.round(window.percent)}%\t${suffix}${trailing}</div>`);
     }
     if (usage.rolling?.resetsAt) {
         const reset = formatResetDuration(usage.rolling.resetsAt);

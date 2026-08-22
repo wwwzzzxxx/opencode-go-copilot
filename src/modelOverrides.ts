@@ -24,7 +24,7 @@ export interface ModelMetaOverride {
     defaultReasoningEffort?: string;
     contextLength?: number;
     maxOutputTokens?: number;
-    apiMode?: "openai" | "anthropic";
+    apiMode?: "openai" | "anthropic" | "openai-responses";
     supportsTemperature?: boolean;
     toolCalling?: boolean;
     baseUrl?: string;
@@ -69,9 +69,7 @@ export const MODEL_OVERRIDES: Record<string, ModelMetaOverride> = {
     // ── GLM ── keep default effort at "high" (matches historical built-in config)
     "glm-5.2": { defaultReasoningEffort: "high" },
 
-    // ── DeepSeek ── Zen free 版实测（2026-08-18）服务端接受 1M+ 输入 token，
-    // models.dev 目录宣称 200k 偏保守。覆盖为 1M 让 VS Code 按完整窗口规划上下文。
-    "deepseek-v4-flash-free": {
-        contextLength: 1000000,
-    },
+    // ── Muse Spark ── Free / Go 均为 OpenAI Responses (input_image)；chat/completions image_url 在 go 上 400
+    "muse-spark-1.2-contributor": { apiMode: "openai-responses" as const },
+    "muse-spark-1.2-contributor-free": { apiMode: "openai-responses" as const },
 };
