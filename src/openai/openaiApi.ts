@@ -338,8 +338,18 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
         }
 
         // max_tokens / max_completion_tokens (mutually exclusive)
+        // The zen/go gateway (openai-compatible route) only honors `max_tokens`.
+        // DeepSeek-family models ignore `max_completion_tokens`, which silently
+        // falls back to a small server-side default and truncates long reasoning
+        // (manifesting as "no response was returned" after thinking drained the
+        // budget). For DeepSeek, send the value as `max_tokens`.
+        const isDeepSeekFamily = this._modelId.toLowerCase().startsWith("deepseek-");
         if (um?.max_completion_tokens !== undefined) {
-            rb.max_completion_tokens = um.max_completion_tokens;
+            if (isDeepSeekFamily) {
+                rb.max_tokens = um.max_completion_tokens;
+            } else {
+                rb.max_completion_tokens = um.max_completion_tokens;
+            }
         } else if (um?.max_tokens !== undefined) {
             rb.max_tokens = um.max_tokens;
         }

@@ -496,6 +496,8 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                         reasoning_effort: (requestBody as Record<string, unknown>).reasoning_effort,
                         toolCount: Array.isArray(tools) ? tools.length : 0,
                         toolChoice: (requestBody as Record<string, unknown>).tool_choice,
+                        maxTokens: (requestBody as Record<string, unknown>).max_tokens
+                            ?? (requestBody as Record<string, unknown>).max_completion_tokens,
                     });
                 } catch { /* ignore */ }
                 logger.debug("request.body", { url, requestBody });
