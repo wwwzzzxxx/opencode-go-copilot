@@ -12,8 +12,19 @@
  *
  * The feature is active only when the effective model list is non-empty (set
  * opencodego.vpnProxyModels to [] to disable).
+ *
+ * IMPORTANT — direct-connect guarantee:
+ *   undici is bundled with THIS extension (not resolved from the VS Code install).
+ *   Every request is sent with an EXPLICIT dispatcher:
+ *     - models matched by vpnProxyModels  -> ProxyAgent(127.0.0.1:7890)
+ *     - all other models                 -> plain Agent (NO proxy)
+ *   An explicit dispatcher means undici never consults HTTP_PROXY / HTTPS_PROXY
+ *   environment variables or the VS Code http.proxy setting, so requests for
+ *   non-VPN models are FORCED direct even when the machine has a system/global
+ *   proxy configured (e.g. Clash system proxy). This prevents unstable proxy
+ *   connections from silently truncating long streaming responses.
  *--------------------------------------------------------------------------------------------*/
-import * as path from "path";
+import { Agent, ProxyAgent, fetch as undiciFetch } from "undici";
 import * as vscode from "vscode";
 import { isRemote } from "./proxyManager";
 import { logger } from "./logger";
@@ -22,7 +33,7 @@ import { logger } from "./logger";
 const DEFAULT_PROXY_URL = "http://127.0.0.1:7890";
 
 /** Cache of the undici ProxyAgent per proxy URL. */
-const proxyAgentCache = new Map<string, unknown>();
+const proxyAgentCache = new Map<string, ProxyAgent>();
 
 function getProxyUrl(): string {
     const cfg = vscode.workspace.getConfiguration("opencodego");
@@ -66,8 +77,9 @@ export function shouldUseVpnProxy(modelId: string): boolean {
 
 /**
  * Create a fetch function that routes through the VPN proxy for the given model id.
- * Falls back to a plain fetch (no proxy) when the model does not need the proxy or
- * undici is unavailable.
+ * Non-VPN models get an explicit plain undici Agent (direct only — never the
+ * global dispatcher, so HTTP_PROXY / HTTPS_PROXY env vars and the VS Code
+ * http.proxy setting are all ignored for them).
  */
 export function createVpnAwareFetch(
     modelId: string,
@@ -80,60 +92,36 @@ export function createVpnAwareFetch(
     // on the REMOTE machine, which doesn't have Clash running.
     const remote = isRemote();
     if (remote) {
-        logger.info("vpn.route", { modelId, action: "tunnel-plain" });
-        // Return a plain undici fetch with body timeout (no VPN agent)
-        try {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            let undici: any;
-            try {
-                undici = require(path.join(vscode.env.appRoot, "node_modules", "undici"));
-            } catch {
-                // eslint-disable-next-line @typescript-eslint/no-require-imports
-                undici = require("undici");
-            }
-            const agent = new undici.Agent({ bodyTimeout: requestTimeoutMs });
-            return (url: RequestInfo | URL, init?: RequestInit) => {
-                return undici.fetch(url, { ...init, dispatcher: agent });
-            };
-        } catch {
-            return fetch;
-        }
+        const agent = new Agent({ bodyTimeout: requestTimeoutMs });
+        logger.info("vpn.route", { modelId, action: "tunnel-plain", isRemote: true });
+        return (url: RequestInfo | URL, init?: RequestInit) => {
+            // undici 8 typings differ from the DOM lib; runtime behavior is identical.
+            return undiciFetch(url as any, { ...init, dispatcher: agent } as any) as any;
+        };
     }
 
     const useProxy = shouldUseVpnProxy(modelId);
     const proxyUrl = getProxyUrl();
 
-    try {
-        // Load undici: prefer the one bundled with the VS Code installation, fall back to
-        // a plain require (extension host resolves it) when that path is unavailable.
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        let undici: any;
-        try {
-            undici = require(path.join(vscode.env.appRoot, "node_modules", "undici"));
-        } catch {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            undici = require("undici");
+    if (useProxy) {
+        let agent = proxyAgentCache.get(proxyUrl);
+        if (!agent) {
+            agent = new ProxyAgent({
+                uri: proxyUrl,
+                requestTls: { rejectUnauthorized: false },
+            });
+            proxyAgentCache.set(proxyUrl, agent);
         }
-        if (useProxy) {
-            let agent = proxyAgentCache.get(proxyUrl);
-            if (!agent) {
-                agent = new undici.ProxyAgent({
-                    uri: proxyUrl,
-                    requestTls: { rejectUnauthorized: false },
-                });
-                proxyAgentCache.set(proxyUrl, agent);
-            }
-            logger.info("vpn.route", { modelId, proxyUrl, action: "proxy", isRemote: remote });
-            return (url: RequestInfo | URL, init?: RequestInit) => {
-                return undici.fetch(url, { ...init, dispatcher: agent });
-            };
-        }
-        const agent = new undici.Agent({ bodyTimeout: requestTimeoutMs });
-        logger.info("vpn.route", { modelId, action: "direct" });
+        logger.info("vpn.route", { modelId, proxyUrl, action: "proxy", isRemote: false });
         return (url: RequestInfo | URL, init?: RequestInit) => {
-            return undici.fetch(url, { ...init, dispatcher: agent });
+            return undiciFetch(url as any, { ...init, dispatcher: agent } as any) as any;
         };
-    } catch {
-        return fetch;
     }
+
+    // Forced direct: explicit plain Agent dispatcher (no env proxy, no system proxy).
+    const agent = new Agent({ bodyTimeout: requestTimeoutMs });
+    logger.info("vpn.route", { modelId, action: "direct", isRemote: false });
+    return (url: RequestInfo | URL, init?: RequestInit) => {
+        return undiciFetch(url as any, { ...init, dispatcher: agent } as any) as any;
+    };
 }

@@ -43,6 +43,12 @@ export abstract class CommonApi<TMessage, TRequestBody> {
     /** Track if we emitted any thinking text. */
     protected _hasEmittedThinking = false;
 
+    /** Finish reason reported by the last streamed response (stop / length / tool_calls). */
+    protected _lastFinishReason: string | undefined;
+
+    /** Total characters of assistant text emitted during the last stream. */
+    protected _emittedTextChars = 0;
+
     /** Track if we emitted the begin-tool-calls whitespace flush. */
     protected _emittedBeginToolCallsHint = false;
 
@@ -265,6 +271,8 @@ export abstract class CommonApi<TMessage, TRequestBody> {
         this._hasEmittedAssistantText = false;
         this._hasEmittedText = false;
         this._hasEmittedThinking = false;
+        this._lastFinishReason = undefined;
+        this._emittedTextChars = 0;
         this._emittedBeginToolCallsHint = false;
         this._xmlThinkActive = false;
         this._xmlThinkDetectionAttempted = false;
@@ -419,6 +427,7 @@ export abstract class CommonApi<TMessage, TRequestBody> {
         if (!content) {
             return { emittedAny: false };
         }
+        this._emittedTextChars += content.length;
         progress.report(new vscode.LanguageModelTextPart(content));
         return { emittedAny: true };
     }

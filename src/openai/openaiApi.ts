@@ -504,7 +504,6 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                         await this.flushToolCallBuffers(progress, false);
                         continue;
                     }
-
                     try {
                         const parsed = JSON.parse(data) as Record<string, unknown>;
 
@@ -556,6 +555,17 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                 }
             }
             logger.debug("openai.stream.done", { modelId });
+            logger.info("openai.stream.end", {
+                modelId,
+                finishReason: this._lastFinishReason,
+                textChars: this._emittedTextChars,
+                thinkingChars: this._capturedReasoningContent.length,
+                emittedText: this._hasEmittedText,
+                emittedAssistantText: this._hasEmittedAssistantText,
+                emittedThinking: this._hasEmittedThinking,
+                toolCalls: this._completedToolCallIndices.size,
+                bufferedToolCalls: this._toolCallBuffers.size,
+            });
         } catch (e) {
             console.error("[OpenCodeGo] Streaming response error:", e);
             logger.error("openai.stream.error", { modelId, error: e instanceof Error ? e.message : String(e) });
@@ -747,6 +757,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
         }
 
         const finish = (choice.finish_reason as string | undefined) ?? undefined;
+        if (finish) {
+            this._lastFinishReason = finish;
+        }
         if (finish === "tool_calls" || finish === "stop") {
             await this.flushToolCallBuffers(progress, true);
         }
