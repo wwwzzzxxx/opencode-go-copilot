@@ -72,4 +72,13 @@ export const MODEL_OVERRIDES: Record<string, ModelMetaOverride> = {
     // ── Muse Spark ── Free / Go 均为 OpenAI Responses (input_image)；chat/completions image_url 在 go 上 400
     "muse-spark-1.2-contributor": { apiMode: "openai-responses" as const },
     "muse-spark-1.2-contributor-free": { apiMode: "openai-responses" as const },
+
+    // ── Ox Alpha Free ── Go / Zen 各有一个，ID 不同但名称相同，加后缀区分来源
+    //    Go 侧：ox-alpha-free（opencode-go provider），Zen 侧：x-preview-f-free（opencode provider）
+    "ox-alpha-free": {
+        displayName: "Ox Alpha Free (Unlimited) (Go)",
+    },
+    "x-preview-f-free": {
+        displayName: "Ox Alpha Free (Unlimited) (Zen)",
+    },
 };

@@ -12,6 +12,12 @@
  * for offline scenarios).
  *
  * Run: node scripts/update-hardcoded-catalog.mjs
+ *
+ * Proxy note: Node's built-in fetch (undici) does not honor HTTPS_PROXY by
+ * default. If the network requires a proxy (e.g. behind Clash at
+ * http://127.0.0.1:7890), set NODE_USE_ENV_PROXY=1 (Node 24+) or pass an
+ * explicit dispatcher. Example:
+ *   $env:NODE_USE_ENV_PROXY="1"; node scripts/update-hardcoded-catalog.mjs
  */
 
 import fs from "node:fs";
