@@ -460,8 +460,92 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
                 requestBody = openaiApi.prepareRequestBody(requestBody, um, options);
 
-                // Send chat request with retry
-                const url = `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
+                // Send chat request with retry — choose endpoint by apiMode
+                // (openai-responses models like muse/gpt are served via /responses;
+                //  zen/go rejects muse images on /chat/completions with a 400)
+                const url = apiMode === "openai-responses"
+                    ? `${BASE_URL.replace(/\/+$/, "")}/responses`
+                    : `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
+                // For responses API, remap chat messages → responses input
+                // (assistant must use output_text, tool → function_call_output,
+                //  tool_calls → function_call, images → input_image)
+                if (apiMode === "openai-responses") {
+                    const chatMessages = requestBody.messages as Array<Record<string, unknown>> | undefined;
+                    const responsesInput: Array<Record<string, unknown>> = [];
+                    if (Array.isArray(chatMessages)) {
+                        for (const m of chatMessages) {
+                            const role = m.role as string;
+                            const c = m.content as unknown;
+                            if (role === "assistant" && Array.isArray(m.tool_calls) && (m.tool_calls as unknown[]).length) {
+                                for (const tc of m.tool_calls as Array<{ id?: string; call_id?: string; name?: string; arguments?: string; function?: { name?: string; arguments?: string } }>) {
+                                    responsesInput.push({
+                                        type: "function_call",
+                                        call_id: tc.id ?? tc.call_id ?? "",
+                                        name: tc.function?.name ?? tc.name ?? "",
+                                        arguments: tc.function?.arguments ?? tc.arguments ?? "{}",
+                                    });
+                                }
+                                if (typeof c === "string" && c) {
+                                    responsesInput.push({ role: "assistant", content: [{ type: "output_text", text: c }] });
+                                } else if (Array.isArray(c) && c.length) {
+                                    const parts = (c as Array<{ type?: string; text?: string }>).filter((p) => p.type === "text" && p.text).map((p) => ({ type: "output_text", text: p.text }));
+                                    if (parts.length) responsesInput.push({ role: "assistant", content: parts });
+                                }
+                                continue;
+                            }
+                            if (role === "tool") {
+                                const out = typeof c === "string"
+                                    ? c
+                                    : Array.isArray(c)
+                                        ? (c as Array<{ type?: string; text?: string }>).filter((p) => p.type === "text" && p.text).map((p) => p.text).join("\n")
+                                        : "";
+                                responsesInput.push({ type: "function_call_output", call_id: m.tool_call_id as string, output: out });
+                                continue;
+                            }
+                            if (typeof c === "string") {
+                                const t = role === "assistant" ? "output_text" : "input_text";
+                                if (c) responsesInput.push({ role, content: [{ type: t, text: c }] });
+                                continue;
+                            }
+                            if (Array.isArray(c)) {
+                                if (role === "assistant") {
+                                    const parts = (c as Array<{ type?: string; text?: string }>).filter((p) => p.type === "text" && p.text).map((p) => ({ type: "output_text", text: p.text }));
+                                    if (parts.length) responsesInput.push({ role: "assistant", content: parts });
+                                } else {
+                                    const parts = (c as Array<{ type?: string; text?: string; image_url?: { url?: string } }>).map((p) => {
+                                        if (p.type === "text" && p.text) return { type: "input_text", text: p.text };
+                                        if (p.type === "image_url" && p.image_url?.url) return { type: "input_image", image_url: p.image_url.url };
+                                        return null;
+                                    }).filter(Boolean);
+                                    if (parts.length) responsesInput.push({ role, content: parts });
+                                }
+                            }
+                        }
+                    }
+                    // opencode responses: input + instructions split
+                    const sys = responsesInput.filter((x) => x.role === "system");
+                    const nonSys = responsesInput.filter((x) => x.role !== "system");
+                    const instructions = sys.map((x) => ((x.content as Array<{ text?: string }>) ?? []).map((p) => p.text ?? "").join("\n")).join("\n") || undefined;
+                    // Responses tools are { type:"function", name, description, parameters }
+                    const responsesTools = Array.isArray(requestBody.tools)
+                        ? (requestBody.tools as Array<{ type?: string; function?: { name?: string; description?: string; parameters?: unknown } }>).map((t) => {
+                            if (t.type === "function" && t.function?.name) {
+                                return { type: "function" as const, name: t.function.name, description: t.function.description, parameters: t.function.parameters ?? { type: "object", properties: {} } };
+                            }
+                            // already in responses shape
+                            return t;
+                        })
+                        : undefined;
+                    requestBody = {
+                        model: requestBody.model,
+                        input: nonSys,
+                        ...(instructions ? { instructions } : {}),
+                        ...(requestBody.reasoning_effort ? { reasoning: { effort: requestBody.reasoning_effort } } : {}),
+                        ...(responsesTools ? { tools: responsesTools } : {}),
+                        ...(requestBody.tool_choice ? { tool_choice: requestBody.tool_choice } : {}),
+                        stream: true,
+                    } as unknown as Record<string, unknown>;
+                }
                 // Detailed muse diagnostics: always log at info so it survives log-level filtering
                 try {
                     const msgs = (requestBody as { messages?: unknown }).messages as unknown[] | undefined;
