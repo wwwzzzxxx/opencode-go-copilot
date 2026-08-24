@@ -4,8 +4,9 @@ node_modules/
 # Build output
 out/
 
-# VSIX package
+# VSIX package (产物统一输出到工作区根目录，不留在仓库内)
 extension.vsix
+*.vsix
 
 # VS Code
 .vscode/settings.json
