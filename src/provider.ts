@@ -476,6 +476,17 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                         for (const m of chatMessages) {
                             const role = m.role as string;
                             const c = m.content as unknown;
+                            // Replay reasoning for stateless multi-turn (store:false)
+                            // Without this the model re-thinks from scratch every turn (muse-spark symptom)
+                            const rc = (m as Record<string, unknown>).reasoning_content as string | undefined;
+                            const enc = (m as Record<string, unknown>).reasoning_encrypted_content as string | undefined;
+                            if (role === "assistant" && (rc || enc)) {
+                                const reasoningItem: Record<string, unknown> = { type: "reasoning" };
+                                if (enc) reasoningItem.encrypted_content = enc;
+                                if (rc) reasoningItem.summary = [{ type: "summary_text", text: rc }];
+                                else reasoningItem.summary = [];
+                                responsesInput.push(reasoningItem);
+                            }
                             if (role === "assistant" && Array.isArray(m.tool_calls) && (m.tool_calls as unknown[]).length) {
                                 for (const tc of m.tool_calls as Array<{ id?: string; call_id?: string; name?: string; arguments?: string; function?: { name?: string; arguments?: string } }>) {
                                     responsesInput.push({
@@ -540,7 +551,9 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                         model: requestBody.model,
                         input: nonSys,
                         ...(instructions ? { instructions } : {}),
-                        ...(requestBody.reasoning_effort ? { reasoning: { effort: requestBody.reasoning_effort } } : {}),
+                        ...(requestBody.reasoning_effort ? { reasoning: { effort: requestBody.reasoning_effort, summary: "auto" } } : {}),
+                        include: ["reasoning.encrypted_content"],
+                        store: false,
                         ...(responsesTools ? { tools: responsesTools } : {}),
                         ...(requestBody.tool_choice ? { tool_choice: requestBody.tool_choice } : {}),
                         stream: true,

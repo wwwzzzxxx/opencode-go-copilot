@@ -96,6 +96,14 @@ export abstract class CommonApi<TMessage, TRequestBody> {
     public _capturedReasoningContent: string = "";
 
     /**
+     * Encrypted reasoning state for OpenAI Responses stateless multi-turn
+     * (store:false). Returned as `reasoning.encrypted_content` and must be
+     * replayed verbatim as a `type: reasoning` input item next turn,
+     * otherwise the model re-thinks from scratch (muse-spark symptom).
+     */
+    public _capturedReasoningEncryptedContent: string | undefined = undefined;
+
+    /**
      * Locally stored images collected during convertMessages.
      * Lives on the instance only — no global Map, automatically GC'd.
      */

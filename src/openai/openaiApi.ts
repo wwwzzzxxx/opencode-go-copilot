@@ -619,18 +619,25 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
             return true;
         }
         if (type === "response.output_item.done") {
-            const item = event.item as { type?: string; id?: string; call_id?: string; name?: string; arguments?: string } | undefined;
+            const item = event.item as { type?: string; id?: string; call_id?: string; name?: string; arguments?: string; encrypted_content?: string; summary?: unknown } | undefined;
             if (item?.type === "function_call" && item.id) {
                 const buf = this._toolCallBuffers.get(0) ?? {};
                 const toolBuf = { id: (item.call_id as string) ?? item.id, name: (item.name as string) ?? (buf as { name?: string }).name ?? "", args: (item.arguments as string) ?? (buf as { args?: string }).args ?? "{}" };
                 this._toolCallBuffers.set(0, toolBuf as { id?: string; name?: string; args: string });
                 await this.tryEmitBufferedToolCall(0, progress);
+            } else if (item?.type === "reasoning") {
+                const enc = (item as Record<string, unknown>).encrypted_content as string | undefined;
+                if (typeof enc === "string" && enc) this._capturedReasoningEncryptedContent = enc;
             }
             return true;
         }
         if (type === "response.completed" || type === "response.incomplete") {
             await this.flushToolCallBuffers(progress, true);
-            const usage = (event.response as { usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } } } | undefined)?.usage;
+            const resp = event.response as { usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } }; reasoning?: { encrypted_content?: string }; output?: Array<{ type?: string; encrypted_content?: string }> } | undefined;
+            const encFromResp = resp?.reasoning?.encrypted_content
+                ?? resp?.output?.find((o) => o.type === "reasoning" && o.encrypted_content)?.encrypted_content;
+            if (typeof encFromResp === "string" && encFromResp) this._capturedReasoningEncryptedContent = encFromResp;
+            const usage = resp?.usage;
             if (usage) {
                 const cached = usage.input_tokens_details?.cached_tokens;
                 this._onUsage?.({ promptTokens: usage.input_tokens ?? 0, completionTokens: usage.output_tokens ?? 0, cacheHitTokens: cached, cacheMissTokens: cached !== undefined && usage.input_tokens !== undefined ? usage.input_tokens - cached : undefined });
