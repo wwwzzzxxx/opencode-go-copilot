@@ -242,6 +242,34 @@ export function formatResetDuration(iso: string): string {
 }
 
 /**
+ * Format an ISO reset time as absolute time in Asia/Shanghai (UTC+8), e.g. "08-21 22:15".
+ */
+export function formatResetTime(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+        return "";
+    }
+    try {
+        const parts = new Intl.DateTimeFormat("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+        }).formatToParts(d);
+        const get = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+        const month = get("month");
+        const day = get("day");
+        const hour = get("hour");
+        const minute = get("minute");
+        if (!month || !day || !hour || !minute) return "";
+        return `${month}-${day} ${hour}:${minute}`;
+    } catch {
+        return "";
+    }
+}
+/**
  * Build a one-line summary of the usage, e.g. "5h: 65% · 7d: 30% · 30d: 12%".
  */
 export function formatUsageSummary(usage: GoUsageResult): string {

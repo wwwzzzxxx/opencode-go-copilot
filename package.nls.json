@@ -58,6 +58,13 @@
 	"config.retry.intervalMs.desc": "Initial delay in milliseconds before the first retry attempt. Increases exponentially with each retry. Default: 1000.",
 	"config.retry.statusCodes.desc": "Additional HTTP status codes that trigger automatic retry beyond the default set (429, 500, 502, 503, 504). Default: [].",
 	"config.enableCommitGeneration.desc": "Show the generate commit message button in the SCM panel. When disabled, the magic wand button and the command palette entry are hidden.",
+	"config.localProxyMode.desc": "Routing mode for the local proxy that forwards requests via your local machine when using SSH Remote (so the source IP is local).",
+	"config.localProxyMode.enum.zen.desc": "Route OpenCode Zen (free) provider through the local proxy",
+	"config.localProxyMode.enum.zenGo.desc": "Route both Zen and Go providers through the local proxy (default)",
+	"config.localProxyMode.enum.go.desc": "Route OpenCode Go (paid) provider through the local proxy",
+	"config.localProxyMode.enum.none.desc": "Disable local proxy (VPN models still use the tunnel when configured)",
+	"config.vpnProxyUrl.desc": "HTTP proxy URL for VPN routing overseas models (e.g. Clash at 127.0.0.1:7890).",
+	"config.vpnProxyModels.desc": "Model id substrings routed via the VPN proxy.",
 	"command.setModelPreset": "Set Model Temperature Preset",
 	"walkthrough.title": "OpenCode Go for Copilot Chat",
 	"walkthrough.description": "Set up OpenCode Go models in Copilot Chat.",
@@ -66,5 +73,6 @@
 	"walkthrough.showModels.title": "Show OpenCode Go models",
 	"walkthrough.showModels.description": "If the models are hidden, open VS Code's Language Models manager and show the OpenCode Go models.\n[Open Language Models](command:workbench.action.chat.manage)",
 	"walkthrough.advancedSettings.title": "Explore advanced settings",
-	"walkthrough.advancedSettings.description": "Customize model presets, enable Zen free models, configure vision proxy, and more.\n[Open settings](command:opencodego.openSettings)"
+	"walkthrough.advancedSettings.description": "Customize model presets, enable Zen free models, configure vision proxy, and more.\n[Open settings](command:opencodego.openSettings)",
+	"config.verboseLogging.desc": "Enable verbose logging for troubleshooting (detailed request diagnostics). Default: false."
 }

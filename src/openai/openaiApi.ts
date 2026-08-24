@@ -111,6 +111,13 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
             }
         }
 
+        // Resolve vision proxy setting: empty string means non-vision also streams directly (no ask_image)
+        const visionCfg = vscode.workspace.getConfiguration("opencodego");
+        const visionProxyModelCfg = visionCfg.get<string>("visionProxyModel", "mimo-v2.5-free")?.trim() ?? "";
+        const nonVisionDirect = visionProxyModelCfg === "";
+        // If direct mode, treat all models as vision for conversion purposes
+        const effectiveVision = modelConfig.vision !== false || nonVisionDirect;
+
         for (const m of messages) {
             const role = mapRole(m);
             const textParts: string[] = [];
@@ -125,7 +132,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                 if (historyEntry) {
                     visionToolHistory.push(historyEntry);
                 } else if (part instanceof vscode.LanguageModelTextPart) {
-                    if (modelSupportsVision) {
+                    if (effectiveVision) {
                         textParts.push(part.value);
                     } else {
                         // Replace data URI images with references, and track imageIndex
@@ -134,7 +141,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                         textParts.push(result.text);
                     }
                 } else if (part instanceof vscode.LanguageModelDataPart && isImageMimeType(part.mimeType)) {
-                    if (modelSupportsVision) {
+                    if (effectiveVision) {
                         imageParts.push(part);
                     } else {
                         // For non-vision models, replace image with text reference
@@ -159,7 +166,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                     if (toolContent) {
                         for (const inner of toolContent) {
                             if (inner instanceof vscode.LanguageModelTextPart) {
-                                if (modelSupportsVision) {
+                                if (effectiveVision) {
                                     toolTexts.push(inner.value);
                                 } else {
                                     const result = replaceDataUriImages(inner.value, imageIndex);
@@ -167,7 +174,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                                     toolTexts.push(result.text);
                                 }
                             } else if (inner instanceof vscode.LanguageModelDataPart && isImageMimeType(inner.mimeType)) {
-                                if (modelSupportsVision) {
+                                if (effectiveVision) {
                                     // Vision models receive the actual image content
                                     // (e.g. the built-in view_image tool result).
                                     toolImages.push({
@@ -184,7 +191,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                                 // image data; resolve the link and pass the image through.
                                 const stored = await resolveResourceLinkToImage(inner.data);
                                 if (stored) {
-                                    if (modelSupportsVision) {
+                                    if (effectiveVision) {
                                         toolImages.push({
                                             type: "image_url",
                                             image_url: {
@@ -331,8 +338,18 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
         }
 
         // max_tokens / max_completion_tokens (mutually exclusive)
+        // The zen/go gateway (openai-compatible route) only honors `max_tokens`.
+        // DeepSeek-family models ignore `max_completion_tokens`, which silently
+        // falls back to a small server-side default and truncates long reasoning
+        // (manifesting as "no response was returned" after thinking drained the
+        // budget). For DeepSeek, send the value as `max_tokens`.
+        const isDeepSeekFamily = this._modelId.toLowerCase().startsWith("deepseek-");
         if (um?.max_completion_tokens !== undefined) {
-            rb.max_completion_tokens = um.max_completion_tokens;
+            if (isDeepSeekFamily) {
+                rb.max_tokens = um.max_completion_tokens;
+            } else {
+                rb.max_completion_tokens = um.max_completion_tokens;
+            }
         } else if (um?.max_tokens !== undefined) {
             rb.max_tokens = um.max_tokens;
         }
@@ -449,6 +466,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
         // Reset mutable state to prevent carryover from previous rounds
         this._resetStreamState();
+        // Record the baseline of _capturedReasoningContent (NOT reset by _resetStreamState
+        // because it must persist across ask_image sub-rounds). Delta = per-round thinking.
+        this._thinkingCharsAtStart = this._capturedReasoningContent.length;
 
         const reader = responseBody.getReader();
         const decoder = new TextDecoder();
@@ -487,9 +507,14 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                         await this.flushToolCallBuffers(progress, false);
                         continue;
                     }
-
                     try {
-                        const parsed = JSON.parse(data);
+                        const parsed = JSON.parse(data) as Record<string, unknown>;
+
+                        // Responses API events are type-tagged (response.*), not choices/delta
+                        if ((parsed as { type?: string }).type?.startsWith("response.")) {
+                            await this.processResponsesEvent(parsed, progress);
+                            continue;
+                        }
 
                         // Capture usage from stream_options: include_usage chunks (final chunk with no choices)
                         const usageData = parsed.usage as Record<string, unknown> | undefined;
@@ -533,6 +558,17 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                 }
             }
             logger.debug("openai.stream.done", { modelId });
+            logger.info("openai.stream.end", {
+                modelId,
+                finishReason: this._lastFinishReason,
+                textChars: this._emittedTextChars,
+                thinkingChars: this._capturedReasoningContent.length - this._thinkingCharsAtStart,
+                emittedText: this._hasEmittedText,
+                emittedAssistantText: this._hasEmittedAssistantText,
+                emittedThinking: this._hasEmittedThinking,
+                toolCalls: this._completedToolCallIndices.size,
+                bufferedToolCalls: this._toolCallBuffers.size,
+            });
         } catch (e) {
             console.error("[OpenCodeGo] Streaming response error:", e);
             logger.error("openai.stream.error", { modelId, error: e instanceof Error ? e.message : String(e) });
@@ -542,6 +578,73 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
             reader.releaseLock();
             this.reportEndThinking(progress);
         }
+    }
+
+    /**
+     * Handle OpenAI Responses stream: output_text.delta / reasoning delta / function_call_arguments.delta / completed
+     */
+    private async processResponsesEvent(
+        event: Record<string, unknown>,
+        progress: Progress<LanguageModelResponsePart>
+    ): Promise<boolean> {
+        const type = event.type as string | undefined;
+        if (!type) return false;
+        // reasoning deltas
+        if (type === "response.reasoning_text.delta" || type === "response.reasoning_summary.delta" || type === "response.reasoning_summary_text.delta") {
+            const delta = event.delta as string | undefined;
+            if (delta) {
+                this._capturedReasoningContent += delta;
+                this.bufferThinkingContent(delta, progress);
+                return true;
+            }
+            return false;
+        }
+        if (type === "response.output_text.delta") {
+            const delta = event.delta as string | undefined;
+            if (delta) {
+                this.reportEndThinking(progress);
+                this.processTextContent(delta, progress);
+                this._hasEmittedAssistantText = true;
+                return true;
+            }
+            return false;
+        }
+        if (type === "response.function_call_arguments.delta") {
+            const delta = event.delta as string | undefined;
+            const itemId = event.item_id as string | number | undefined;
+            const idx = typeof itemId === "string" ? 0 : (itemId as number) ?? 0;
+            const buf = this._toolCallBuffers.get(idx) ?? { args: "" };
+            if (delta) buf.args += delta;
+            this._toolCallBuffers.set(idx, buf);
+            return true;
+        }
+        if (type === "response.output_item.done") {
+            const item = event.item as { type?: string; id?: string; call_id?: string; name?: string; arguments?: string; encrypted_content?: string; summary?: unknown } | undefined;
+            if (item?.type === "function_call" && item.id) {
+                const buf = this._toolCallBuffers.get(0) ?? {};
+                const toolBuf = { id: (item.call_id as string) ?? item.id, name: (item.name as string) ?? (buf as { name?: string }).name ?? "", args: (item.arguments as string) ?? (buf as { args?: string }).args ?? "{}" };
+                this._toolCallBuffers.set(0, toolBuf as { id?: string; name?: string; args: string });
+                await this.tryEmitBufferedToolCall(0, progress);
+            } else if (item?.type === "reasoning") {
+                const enc = (item as Record<string, unknown>).encrypted_content as string | undefined;
+                if (typeof enc === "string" && enc) this._capturedReasoningEncryptedContent = enc;
+            }
+            return true;
+        }
+        if (type === "response.completed" || type === "response.incomplete") {
+            await this.flushToolCallBuffers(progress, true);
+            const resp = event.response as { usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } }; reasoning?: { encrypted_content?: string }; output?: Array<{ type?: string; encrypted_content?: string }> } | undefined;
+            const encFromResp = resp?.reasoning?.encrypted_content
+                ?? resp?.output?.find((o) => o.type === "reasoning" && o.encrypted_content)?.encrypted_content;
+            if (typeof encFromResp === "string" && encFromResp) this._capturedReasoningEncryptedContent = encFromResp;
+            const usage = resp?.usage;
+            if (usage) {
+                const cached = usage.input_tokens_details?.cached_tokens;
+                this._onUsage?.({ promptTokens: usage.input_tokens ?? 0, completionTokens: usage.output_tokens ?? 0, cacheHitTokens: cached, cacheMissTokens: cached !== undefined && usage.input_tokens !== undefined ? usage.input_tokens - cached : undefined });
+            }
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -664,6 +767,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
         }
 
         const finish = (choice.finish_reason as string | undefined) ?? undefined;
+        if (finish) {
+            this._lastFinishReason = finish;
+        }
         if (finish === "tool_calls" || finish === "stop") {
             await this.flushToolCallBuffers(progress, true);
         }

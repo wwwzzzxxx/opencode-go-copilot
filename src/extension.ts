@@ -9,6 +9,7 @@ import { VersionManager } from "./versionManager";
 import { abortCommitGeneration, generateCommitMsg } from "./gitCommit/commitMessageGenerator";
 import { TokenizerManager } from "./tokenizer/tokenizerManager";
 import { prepareLanguageModelChatInformation, resetAutoDiscoveryState } from "./provideModel";
+import { maybeStartLocalProxy } from "./proxyManager";
 
 // ---- Walkthrough / Welcome constants ----
 
@@ -21,7 +22,10 @@ const WALKTHROUGH_ID = "OnesoftQwQ.opencode-go-copilot-provider#opencodeGoGettin
 export function activate(context: vscode.ExtensionContext) {
     // Initialize logger
     logger.init();
-    logger.info("extension.activate", { version: VersionManager.getVersion() });
+    logger.info("extension.activate", { version: VersionManager.getVersion(), remoteName: vscode.env.remoteName ?? null, uiKind: (vscode.env as any).uiKind ?? null });
+
+    // Start local proxy for SSH remote forwarding (only runs on UI host, no-op on remote)
+    void maybeStartLocalProxy(context.secrets);
 
     // Initialize TokenizerManager with extension path
     TokenizerManager.initialize(context.extensionPath);

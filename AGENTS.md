@@ -67,7 +67,7 @@
 
 > Go 服务商当前收录模型包括但不限于：`glm-5/5.1/5.2`、`kimi-k3/k2.5/k2.6/k2.7-code`、`deepseek-v4-pro/flash`、`mimo-v2-pro/omni/v2.5-pro/v2.5`、`minimax-m3/m2.7/m2.5`、`qwen3.5/3.6/3.7-plus`、`qwen3.7-max`、`qwen3.8-max`、`gpt-5.6-luna`、`grok-4.5`、`hy3` 等。实际显示取决于目录收录与 API 可用性。
 > Zen 免费模型（`-free` 后缀）包括但不限于：`big-pickle`、`deepseek-v4-flash-free`、`minimax-m3-free`、`minimax-m2.5-free`、`ring-2.6-1t-free`、`nemotron-3-super-free` 等。
-> 兜底快照：`src/hardcodedModelList.ts` 内置 2026-08-04 的官方目录快照，含 opencode-go（24 个）与 opencode（85 个，其中 22 个 `-free` 免费模型）的**完整模型元数据**（limit、cost、reasoning_options、attachment、modalities 等），仅作官方目录与镜像均不可达时的最后防线。发布构建（`.github/workflows/release.yml`）会先运行 `scripts/update-hardcoded-catalog.mjs` 自动刷新该快照（拉取官方目录 → 提取两个服务商 → 重写文件），失败时保留旧快照不阻断构建；数据有变化时随版本号变更在同一 commit 推送。
+> 兜底快照：`src/hardcodedModelList.ts` 内置 2026-08-23 的官方目录快照，含 opencode-go（28 个）与 opencode（93 个，其中 28 个 `-free` 免费模型）的**完整模型元数据**（limit、cost、reasoning_options、attachment、modalities 等），仅作官方目录与镜像均不可达时的最后防线。发布构建（`.github/workflows/release.yml`）会先运行 `scripts/update-hardcoded-catalog.mjs` 自动刷新该快照（拉取官方目录 → 提取两个服务商 → 重写文件），失败时保留旧快照不阻断构建；数据有变化时随版本号变更在同一 commit 推送。
 
 #### 思考强度自动推导（`reasoning_options`）
 
@@ -1473,6 +1473,9 @@ node scripts/update-hardcoded-catalog.mjs
 # 打包 VSIX
 npm run build
 # 等效于: npx @vscode/vsce package -o extension.vsix
+# ⚠️ 切勿加 --no-dependencies：会漏掉 @microsoft/tiktokenizer（dependencies 唯一运行时依赖），
+#    安装后 activate() 在注册命令前抛 Cannot find module '@microsoft/tiktokenizer' 崩溃，
+#    表现为所有 opencodego.* 命令 not found。测试窗口读源码 out/ 有 node_modules 所以正常。
 ```
 
 ### 5.2 编译配置 (tsconfig.json)

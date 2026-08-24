@@ -10,12 +10,12 @@ import {
     Progress,
 } from "vscode";
 
-import * as path from "path";
-
 import type { ModelPreset, OpenCodeGoModelItem } from "./types";
 
 import { createRetryConfig, executeWithRetry, convertToolsToOpenAI } from "./utils";
 import { getCatalogProviderBaseUrl } from "./modelsDev";
+import { resolveBaseUrl, clearTunnelProbeCache } from "./proxyManager";
+import { createVpnAwareFetch } from "./vpnProxy";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
 import { getCatalogModelConfig, resolveProviderForModelId, resolveVisionProxyModelId } from "./catalogModels";
@@ -94,24 +94,6 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
         private readonly secrets: vscode.SecretStorage,
         private readonly statusBarItem: vscode.StatusBarItem
     ) { }
-
-    /**
-     * Create an undici fetch function with custom bodyTimeout to prevent premature
-     * connection termination during long streaming responses.
-     * Falls back to global fetch if undici is unavailable.
-     */
-    private _createFetchWithTimeout(requestTimeoutMs: number): typeof fetch {
-        try {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const undici = require(path.join(vscode.env.appRoot, 'node_modules', 'undici'));
-            const agent = new undici.Agent({ bodyTimeout: requestTimeoutMs });
-            return (url: RequestInfo | URL, init?: RequestInit) => {
-                return undici.fetch(url, { ...init, dispatcher: agent });
-            };
-        } catch {
-            return fetch;
-        }
-    }
 
     /**
      * Get the list of available language models contributed by this provider.
@@ -230,7 +212,11 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
             // Determine API mode from model config (default: openai)
             const apiMode = um?.apiMode || "openai";
-            const baseUrl = um?.baseUrl || getCatalogProviderBaseUrl("opencode-go", "https://opencode.ai/zen/go/v1/");
+            const providerId = resolveProviderForModelId(model.id);
+            const directBaseUrl = um?.baseUrl || getCatalogProviderBaseUrl(providerId, providerId === "opencode" ? "https://opencode.ai/zen/v1/" : "https://opencode.ai/zen/go/v1/");
+            // In the remote (SSH) host, route through the SSH tunnel to the local proxy when reachable.
+            // VPN models (muse/gpt/...) are forced through the tunnel regardless of localProxyMode.
+            const baseUrl = await resolveBaseUrl(providerId, directBaseUrl, model.id);
 
             logger.info("request.start", {
                 modelId: model.id,
@@ -311,7 +297,44 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                 });
             }
             // Create undici fetch with custom bodyTimeout (extends TCP idle timeout during streaming)
-            dispatchFetch = this._createFetchWithTimeout(requestTimeoutMs);
+            // and VPN-aware routing for overseas models.
+            dispatchFetch = createVpnAwareFetch(model.id, requestTimeoutMs);
+            // Tunnel fallback: if we are using the SSH tunnel and it fails (local proxy not running),
+            // clear the probe cache and retry with direct URL once. This makes single-window SSH
+            // more robust and provides a better error if direct also fails.
+            {
+                const _tunnelBase = baseUrl;
+                const _directBase = directBaseUrl;
+                if (_tunnelBase !== _directBase && _tunnelBase.includes("127.0.0.1:8900")) {
+                    const _origFetch = dispatchFetch;
+                    const _fallbackFetch = _origFetch; // same dispatcher, different URL
+                    dispatchFetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+                        const urlStr = typeof url === "string" ? url : url.toString();
+                        const isTunnelUrl = urlStr.includes("127.0.0.1:8900");
+                        try {
+                            return await _origFetch(url, init);
+                        } catch (e) {
+                            const msg = e instanceof Error ? e.message : String(e);
+                            const isNetErr = msg.toLowerCase().includes("fetch failed") || msg.toLowerCase().includes("econnrefused") || msg.toLowerCase().includes("econnreset");
+                            if (isTunnelUrl && isNetErr) {
+                                logger.warn("request.tunnelFallback", { modelId: model.id, url: urlStr, error: msg });
+                                clearTunnelProbeCache();
+                                const fallbackUrl = urlStr.replace(_tunnelBase, _directBase);
+                                if (fallbackUrl !== urlStr) {
+                                    logger.info("request.fallbackDirect", { from: urlStr, to: fallbackUrl });
+                                    try {
+                                        return await _fallbackFetch(fallbackUrl as any, init);
+                                    } catch (e2) {
+                                        // throw original error with context
+                                        throw e;
+                                    }
+                                }
+                            }
+                            throw e;
+                        }
+                    }) as typeof fetch;
+                }
+            }
 
             // Prepare headers with custom headers if specified
             const requestHeaders = CommonApi.prepareHeaders(modelApiKey, apiMode, um?.headers);
@@ -323,15 +346,22 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
             if (apiMode === "anthropic") {
                 // Anthropic API mode
                 const anthropicApi = new AnthropicApi(model.id);
+                // Accumulate incremental usage during streaming; flushed once
+                // after the stream ends so counters/tooltip update only when
+                // the current response has finished (no mid-stream flicker or
+                // double-counting if the API reports usage more than once).
+                let anthropicUsage: StreamUsage | undefined;
                 anthropicApi.onUsage = (usage) => {
                     usageReportedDuringStream = true;
                     // Always report to native Copilot indicator (use original progress, not trackingProgress wrapper)
                     reportNativeUsage(usage, progress);
-                    // Conditionally update Advanced Token indicator
                     if (enableThirdPartyIndicator) {
-                        recordUsage(usage);
-                        updateCumulativeTooltip(this.statusBarItem);
-                        updateStatusBarWithApiPrompt(this.statusBarItem);
+                        if (!anthropicUsage) {
+                            anthropicUsage = { ...usage };
+                        } else {
+                            anthropicUsage.promptTokens += usage.promptTokens;
+                            anthropicUsage.completionTokens += usage.completionTokens;
+                        }
                     }
                 };
                 const anthropicMessages = await anthropicApi.convertMessages(messages, modelConfig);
@@ -396,18 +426,26 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     token: token,
                     options: options,
                 });
+
+                // Response finished: flush accumulated usage once
+                if (enableThirdPartyIndicator && anthropicUsage) {
+                    recordUsage(anthropicUsage, um?.cost);
+                    updateStatusBarWithApiPrompt(this.statusBarItem);
+                }
+                // Count the call toward the free model daily quota display
             } else {
                 // OpenAI Chat Completions API mode
                 const openaiApi = new OpenaiApi(model.id);
+                // OpenAI usage chunks are cumulative; keep the last (final)
+                // report and flush once after the stream ends so counters and
+                // the tooltip only update when the response has finished.
+                let openaiUsage: StreamUsage | undefined;
                 openaiApi.onUsage = (usage) => {
                     usageReportedDuringStream = true;
                     // Always report to native Copilot indicator (use original progress, not trackingProgress wrapper)
                     reportNativeUsage(usage, progress);
-                    // Conditionally update Advanced Token indicator
                     if (enableThirdPartyIndicator) {
-                        recordUsage(usage);
-                        updateCumulativeTooltip(this.statusBarItem);
-                        updateStatusBarWithApiPrompt(this.statusBarItem);
+                        openaiUsage = usage;
                     }
                 };
                 const openaiMessages = await openaiApi.convertMessages(messages, modelConfig);
@@ -422,8 +460,143 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
                 requestBody = openaiApi.prepareRequestBody(requestBody, um, options);
 
-                // Send chat request with retry
-                const url = `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
+                // Send chat request with retry — choose endpoint by apiMode
+                // (openai-responses models like muse/gpt are served via /responses;
+                //  zen/go rejects muse images on /chat/completions with a 400)
+                const url = apiMode === "openai-responses"
+                    ? `${BASE_URL.replace(/\/+$/, "")}/responses`
+                    : `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
+                // For responses API, remap chat messages → responses input
+                // (assistant must use output_text, tool → function_call_output,
+                //  tool_calls → function_call, images → input_image)
+                if (apiMode === "openai-responses") {
+                    const chatMessages = requestBody.messages as Array<Record<string, unknown>> | undefined;
+                    const responsesInput: Array<Record<string, unknown>> = [];
+                    if (Array.isArray(chatMessages)) {
+                        for (const m of chatMessages) {
+                            const role = m.role as string;
+                            const c = m.content as unknown;
+                            // Replay reasoning for stateless multi-turn (store:false)
+                            // Without this the model re-thinks from scratch every turn (muse-spark symptom)
+                            const rc = (m as Record<string, unknown>).reasoning_content as string | undefined;
+                            const enc = (m as Record<string, unknown>).reasoning_encrypted_content as string | undefined;
+                            if (role === "assistant" && (rc || enc)) {
+                                const reasoningItem: Record<string, unknown> = { type: "reasoning" };
+                                if (enc) reasoningItem.encrypted_content = enc;
+                                if (rc) reasoningItem.summary = [{ type: "summary_text", text: rc }];
+                                else reasoningItem.summary = [];
+                                responsesInput.push(reasoningItem);
+                            }
+                            if (role === "assistant" && Array.isArray(m.tool_calls) && (m.tool_calls as unknown[]).length) {
+                                for (const tc of m.tool_calls as Array<{ id?: string; call_id?: string; name?: string; arguments?: string; function?: { name?: string; arguments?: string } }>) {
+                                    responsesInput.push({
+                                        type: "function_call",
+                                        call_id: tc.id ?? tc.call_id ?? "",
+                                        name: tc.function?.name ?? tc.name ?? "",
+                                        arguments: tc.function?.arguments ?? tc.arguments ?? "{}",
+                                    });
+                                }
+                                if (typeof c === "string" && c) {
+                                    responsesInput.push({ role: "assistant", content: [{ type: "output_text", text: c }] });
+                                } else if (Array.isArray(c) && c.length) {
+                                    const parts = (c as Array<{ type?: string; text?: string }>).filter((p) => p.type === "text" && p.text).map((p) => ({ type: "output_text", text: p.text }));
+                                    if (parts.length) responsesInput.push({ role: "assistant", content: parts });
+                                }
+                                continue;
+                            }
+                            if (role === "tool") {
+                                const out = typeof c === "string"
+                                    ? c
+                                    : Array.isArray(c)
+                                        ? (c as Array<{ type?: string; text?: string }>).filter((p) => p.type === "text" && p.text).map((p) => p.text).join("\n")
+                                        : "";
+                                responsesInput.push({ type: "function_call_output", call_id: m.tool_call_id as string, output: out });
+                                continue;
+                            }
+                            if (typeof c === "string") {
+                                const t = role === "assistant" ? "output_text" : "input_text";
+                                if (c) responsesInput.push({ role, content: [{ type: t, text: c }] });
+                                continue;
+                            }
+                            if (Array.isArray(c)) {
+                                if (role === "assistant") {
+                                    const parts = (c as Array<{ type?: string; text?: string }>).filter((p) => p.type === "text" && p.text).map((p) => ({ type: "output_text", text: p.text }));
+                                    if (parts.length) responsesInput.push({ role: "assistant", content: parts });
+                                } else {
+                                    const parts = (c as Array<{ type?: string; text?: string; image_url?: { url?: string } }>).map((p) => {
+                                        if (p.type === "text" && p.text) return { type: "input_text", text: p.text };
+                                        if (p.type === "image_url" && p.image_url?.url) return { type: "input_image", image_url: p.image_url.url };
+                                        return null;
+                                    }).filter(Boolean);
+                                    if (parts.length) responsesInput.push({ role, content: parts });
+                                }
+                            }
+                        }
+                    }
+                    // opencode responses: input + instructions split
+                    const sys = responsesInput.filter((x) => x.role === "system");
+                    const nonSys = responsesInput.filter((x) => x.role !== "system");
+                    const instructions = sys.map((x) => ((x.content as Array<{ text?: string }>) ?? []).map((p) => p.text ?? "").join("\n")).join("\n") || undefined;
+                    // Responses tools are { type:"function", name, description, parameters }
+                    const responsesTools = Array.isArray(requestBody.tools)
+                        ? (requestBody.tools as Array<{ type?: string; function?: { name?: string; description?: string; parameters?: unknown } }>).map((t) => {
+                            if (t.type === "function" && t.function?.name) {
+                                return { type: "function" as const, name: t.function.name, description: t.function.description, parameters: t.function.parameters ?? { type: "object", properties: {} } };
+                            }
+                            // already in responses shape
+                            return t;
+                        })
+                        : undefined;
+                    requestBody = {
+                        model: requestBody.model,
+                        input: nonSys,
+                        ...(instructions ? { instructions } : {}),
+                        ...(requestBody.reasoning_effort ? { reasoning: { effort: requestBody.reasoning_effort, summary: "auto" } } : {}),
+                        include: ["reasoning.encrypted_content"],
+                        store: false,
+                        ...(responsesTools ? { tools: responsesTools } : {}),
+                        ...(requestBody.tool_choice ? { tool_choice: requestBody.tool_choice } : {}),
+                        stream: true,
+                    } as unknown as Record<string, unknown>;
+                }
+                // Detailed muse diagnostics: always log at info so it survives log-level filtering
+                try {
+                    const msgs = (requestBody as { messages?: unknown }).messages as unknown[] | undefined;
+                    let hasImage = false;
+                    let imageMime = "";
+                    let imageLen = 0;
+                    if (Array.isArray(msgs)) {
+                        for (const m of msgs) {
+                            const c = (m as { content?: unknown }).content;
+                            if (Array.isArray(c)) {
+                                for (const p of c as Array<{ type?: string; image_url?: { url?: string } }>) {
+                                    if (p?.type === "image_url" && typeof p.image_url?.url === "string") {
+                                        hasImage = true;
+                                        const u = p.image_url.url;
+                                        imageLen = u.length;
+                                        const mm = u.match(/^data:([^;]+);base64,/);
+                                        imageMime = mm ? mm[1] : "unknown";
+                                        break;
+                                    }
+                                }
+                            }
+                            if (hasImage) break;
+                        }
+                    }
+                    const tools = (requestBody as { tools?: unknown[] }).tools;
+                    if (vscode.workspace.getConfiguration("opencodego").get<boolean>("verboseLogging", false)) logger.info("request.museDiag", {
+                        modelId: model.id,
+                        hasImage,
+                        imageMime,
+                        imageLen,
+                        thinking: (requestBody as Record<string, unknown>).thinking,
+                        reasoning_effort: (requestBody as Record<string, unknown>).reasoning_effort,
+                        toolCount: Array.isArray(tools) ? tools.length : 0,
+                        toolChoice: (requestBody as Record<string, unknown>).tool_choice,
+                        maxTokens: (requestBody as Record<string, unknown>).max_tokens
+                            ?? (requestBody as Record<string, unknown>).max_completion_tokens,
+                    });
+                } catch { /* ignore */ }
                 logger.debug("request.body", { url, requestBody });
                 const response = await executeWithRetry(async () => {
                     const res = await dispatchFetch(url, {
@@ -472,6 +645,13 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     token: token,
                     options: options,
                 });
+
+                // Response finished: flush final usage once
+                if (enableThirdPartyIndicator && openaiUsage) {
+                    recordUsage(openaiUsage, um?.cost);
+                    updateStatusBarWithApiPrompt(this.statusBarItem);
+                }
+                // Count the call toward the free model daily quota display
             }
 
             // Fallback: if API did not return usage data, use client-side calculation for native indicator
@@ -484,7 +664,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                 };
                 reportNativeUsage(fallbackUsage, progress);
                 if (enableThirdPartyIndicator) {
-                    recordUsage(fallbackUsage);
+                    recordUsage(fallbackUsage, um?.cost);
                     updateCumulativeTooltip(this.statusBarItem);
                 }
             }

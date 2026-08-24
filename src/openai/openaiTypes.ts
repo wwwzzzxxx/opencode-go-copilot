@@ -29,6 +29,7 @@ export interface OpenAIChatMessage {
     tool_calls?: OpenAIToolCall[];
     tool_call_id?: string;
     reasoning_content?: string;
+    reasoning_encrypted_content?: string;
 }
 
 /**

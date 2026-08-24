@@ -480,14 +480,16 @@ export function hasModelDevEntry(apiModelId: string): boolean {
 }
 
 /**
- * Deduce API mode (openai vs anthropic) from a model ID and optional catalog entry.
- * Uses family-based heuristics since the catalog does not directly expose apiMode.
- *
- * Also checks the `provider.npm` field: @ai-sdk/anthropic → anthropic.
+ * Deduce API mode from a model ID and optional catalog entry.
+ * Mirrors opencode's docs/zen.mdx endpoint table:
+ *   /responses → openai-responses (muse/gpt), /messages → anthropic (claude/qwen3.7), else chat/completions.
+ * Also checks the `provider.npm` field: @ai-sdk/anthropic → anthropic, @ai-sdk/openai → openai-responses.
  */
-export function deduceApiModeFromFamily(modelId: string, entry?: ModelsDevEntry): "openai" | "anthropic" {
-    // Check provider npm hint first
+export function deduceApiModeFromFamily(modelId: string, entry?: ModelsDevEntry): "openai" | "anthropic" | "openai-responses" {
+    // Explicit openai Responses family
+    if (modelId.toLowerCase().startsWith("muse-") || modelId.toLowerCase().startsWith("gpt-")) return "openai-responses";
     if (entry?.provider?.npm?.includes("anthropic")) return "anthropic";
+    if (entry?.provider?.npm?.includes("@ai-sdk/openai") && (entry.family?.toLowerCase().includes("gpt") || modelId.startsWith("gpt-"))) return "openai-responses";
 
     const family = entry?.family?.toLowerCase() ?? "";
     if (family.includes("claude") || family.includes("anthropic")) return "anthropic";
