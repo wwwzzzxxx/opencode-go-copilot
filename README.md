@@ -28,7 +28,7 @@
 
 安装后状态栏直接展示 `命中/总命中/输入/输出/费用/5h·周·月配额及倒计时`（如下图），无需额外设置。
 
-![token_counter](/assets/screenshots/token_counter.png)
+![token_counter](/assets/screenshots/token_counter_v2.png)
 
 ### Git 提交消息
 
