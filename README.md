@@ -1,114 +1,14 @@
-<div align="center">
+﻿<div align="center">
 
 ![logo](/assets/logo.png)
 
-# OpenCode Go Provider for Copilot
-
-[English](#english) | [中文](#中文)
+# 【魔改】OpenCode Go Provider for Copilot
 
 </div>
 
-## English
-
 > [!IMPORTANT]
-> **This is not affiliated with, officially maintained by, or endorsed by OpenCode or Anomaly.**
-
-Integrate [OpenCode Go](https://opencode.ai/go) and optional Zen free models into GitHub Copilot Chat as a VS Code extension.
-
-### Usage
-
-1. **Set API Key**: `Ctrl+Shift+P` → `OpenCodeGo: Set OpenCode Go API Key`
-2. **Show Models**: Click the settings icon in the model picker → **Language Models** panel → set your desired models to Visible
-3. **Select Model**: In the Copilot Chat bottom model picker, choose an "OpenCode Go" or "OpenCode Zen" model
-4. **Start chatting**
-
-### Advanced Token Usage Indicator
-
-Once installed, the status bar shows the current context usage and cumulative input/output token counts for OpenCode Go models. DeepSeek models and models that return cache metrics via the OpenAI-compatible format also display the **cumulative cache hit count** and **cache hit rate** in the tooltip.
-
-You can control this indicator via the `opencodego.enableThirdPartyTokenIndicator` setting (default: `true`). When disabled, only the native Copilot token indicator remains visible.
-
-> [!NOTE]
-> Whether non-DeepSeek models display cache data depends on whether the model API returns cache metrics in an OpenAI-compatible format. This does not indicate whether the model supports caching — caching support depends on OpenCode Go.
-
-![token_counter](/assets/screenshots/token_counter.png)
-
-### Git Commit Messages
-
-Click the **magic wand** button in the Source Control (SCM) panel to auto-generate a commit message.
-
-You can configure the model, language, number of recent commits to reference, and whether to attach context files.
-
-### Model Temperature Presets
-
-Quickly switch temperature presets via `Ctrl+Shift+P` → `OpenCodeGo: Set Model Temperature Preset`.
-
-Built-in presets:
-
-| Preset | Temperature |
-|--------|-------------|
-| Precise | 0.0 |
-| Balanced | 1.0 |
-| Creative | 1.2 |
-| Extra Creative | 1.7 |
-
-You can also configure `opencodego.temperature` and `opencodego.top_p` directly in `settings.json` (requires `opencodego.modelPreset` set to `"custom"`).
-
-### Extended Vision Understanding
-
-This extension adds **extended vision understanding** capability to **text-only models** that do not natively support vision. When you send a message with an image to these models, they can call a vision-capable model to describe the image, and then answer based on that description.
-
-You can configure the default vision model and whether to enable thinking when describing images. By default, Qwen3.6-Plus is used to describe images.
-
-### OpenCode Zen Free Models
-
-Disabled by default. Enable via the `opencodego.enableZenFreeModels` setting. When enabled, free models fetched from the Zen API are added to the model picker with a `Zen/` prefix (e.g. `Zen/DeepSeek V4 Flash Free`). Requires a full reload of VS Code to take effect after changing the setting.
-
-### Configuration
-
-Available in `settings.json`:
-
-```json
-{
-  "opencodego.commitLanguage": "auto",
-  "opencodego.commitModel": "deepseek-v4-flash",
-  "opencodego.commitMessagePrompt": "",
-  "opencodego.requestTimeout": 600000,
-  "opencodego.recentCommitsCount": 10,
-  "opencodego.commitIncludeCommitDiff": false,
-  "opencodego.commitAttachContextFiles": true
-}
-```
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `opencodego.commitLanguage` | `auto` | Language for Git commit messages. When set to `auto`, the language is detected from recent commit history (defaults to English if no history exists). |
-| `opencodego.commitModel` | `deepseek-v4-flash` | Model ID used for commit message generation. |
-| `opencodego.commitMessagePrompt` | `""` | Custom system prompt for commit message generation. |
-| `opencodego.requestTimeout` | `600000` | Maximum time (ms) for a single API request. Default is 600000 (10 minutes). Increase if long responses time out. |
-| `opencodego.recentCommitsCount` | `10` | Number of recent commits to analyze for style reference when generating commit messages. Set to 0 to disable. |
-| `opencodego.commitIncludeCommitDiff` | `false` | Include the actual code changes (diff) of recent commits in the style reference, helping the model generate messages that better match the project's commit style. |
-| `opencodego.enableZenFreeModels` | `false` | Enable OpenCode Zen free models in the model picker. Zen free models are NOT supported for git commit message generation. Requires a full reload to take effect. |
-| `opencodego.commitAttachContextFiles` | `true` | Attach the content of AGENTS.md and README.md from the repository root as additional context for commit message generation, helping the model better understand the project. |
-| `opencodego.visionProxyModel` | `qwen3.6-plus` | Vision model used by the `ask_image` tool when the selected model does not support vision. |
-| `opencodego.visionProxyThinking` | `false` | Enable thinking/reasoning in the vision proxy model when answering image queries. |
-
-> [!NOTE]
-> Models with switchable thinking (e.g., DeepSeek, Qwen) provide reasoning effort levels such as `Disabled`/`High`/`Maximum`.
-
-### Build
-
-```bash
-npm install
-npm run compile
-npm run build      # packages extension.vsix
-```
-
-### License
-
-MIT License. This project references code from [oai-compatible-copilot](https://github.com/JohnnyZ93/oai-compatible-copilot).
-
----
+> **魔改声明**
+> 本项目是基于 [OnesoftQwQ/opencode-go-copilot](https://github.com/OnesoftQwQ/opencode-go-copilot) 的 Fork 魔改版，额外支持：VPN 代理转发、状态栏命中率/用耗/多窗口配额展示等。`muse-spark` 为上游已有能力，因本 Fork 较早、近期已同步上游的更新并做了适配。原项目 MIT 许可，本 Fork 保持相同许可。
 
 ## 中文
 
@@ -124,14 +24,9 @@ MIT License. This project references code from [oai-compatible-copilot](https://
 3. **选择模型**：在 Copilot Chat 底部模型选择器中选择 "OpenCode Go" 或 "OpenCode Zen" 下的模型
 4. **开始对话**
 
-### 高级 Token 用量指示器
+### 高级 Token 用量指示器（魔改）
 
-安装后，使用 OpenCode Go 提供的模型时，状态栏会显示当前上下文用量与累计输入/输出 Token 量。DeepSeek 和通过 OpenAI 格式返回缓存用量的模型还会显示**累计缓存命中量**与**缓存命中率**。
-
-可通过 `opencodego.enableThirdPartyTokenIndicator` 设置（默认 `true`）控制此高级 Token 指示器。关闭后仅显示 Copilot 原生 Token 指示器。
-
-> [!NOTE]
-> 非 DeepSeek 的模型是否显示缓存数据取决于模型接口是否通过 OpenAI 格式返回缓存数据，这并不代表此模型是否支持缓存。模型对于缓存的支持情况取决于 OpenCode Go。
+安装后状态栏直接展示 `命中/总命中/输入/输出/费用/5h·周·月配额及倒计时`（如下图），无需额外设置。
 
 ![token_counter](/assets/screenshots/token_counter.png)
 

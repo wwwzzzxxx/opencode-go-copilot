@@ -1,8 +1,8 @@
 {
-  "name": "opencode-go-copilot-provider",
+  "name": "magai-opencode-go-copilot-provider",
   "publisher": "wwwzzzxxx",
-  "displayName": "OpenCode Go Provider for Copilot",
-  "description": "Integrate OpenCode Go models into GitHub Copilot Chat",
+  "displayName": "【魔改】OpenCode Go Provider for Copilot",
+  "description": "基于 OnesoftQwQ/opencode-go-copilot 魔改",
   "icon": "assets/logo.png",
   "keywords": [
     "ai",
@@ -16,7 +16,7 @@
     "thinking",
     "git-commit"
   ],
-  "version": "1.10.11",
+  "version": "1.0.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/wwwzzzxxx/opencode-go-copilot"
