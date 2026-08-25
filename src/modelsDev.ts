@@ -486,10 +486,15 @@ export function hasModelDevEntry(apiModelId: string): boolean {
  * Also checks the `provider.npm` field: @ai-sdk/anthropic → anthropic, @ai-sdk/openai → openai-responses.
  */
 export function deduceApiModeFromFamily(modelId: string, entry?: ModelsDevEntry): "openai" | "anthropic" | "openai-responses" {
-    // Explicit openai Responses family
-    if (modelId.toLowerCase().startsWith("muse-") || modelId.toLowerCase().startsWith("gpt-")) return "openai-responses";
+    // Explicit openai Responses family — aligned with opencode official getResponsesModelConfig
+    // (only gpt-5/o/codex/computer-use are hidden-reasoning /responses models; gpt-5-chat is excluded,
+    // and muse- is always responses). Do not treat generic gpt-* (e.g. gpt-4) as responses.
+    const lower = modelId.toLowerCase();
+    if (lower.startsWith("muse-")) return "openai-responses";
+    if (lower.startsWith("gpt-5") && !lower.startsWith("gpt-5-chat")) return "openai-responses";
+    if (lower.startsWith("o1") || lower.startsWith("o3") || lower.startsWith("o4-mini") || lower.startsWith("o4") || lower.startsWith("codex-") || lower.startsWith("computer-use")) return "openai-responses";
     if (entry?.provider?.npm?.includes("anthropic")) return "anthropic";
-    if (entry?.provider?.npm?.includes("@ai-sdk/openai") && (entry.family?.toLowerCase().includes("gpt") || modelId.startsWith("gpt-"))) return "openai-responses";
+    if (entry?.provider?.npm?.includes("@ai-sdk/openai") && (entry.family?.toLowerCase().includes("gpt") || lower.startsWith("gpt-5"))) return "openai-responses";
 
     const family = entry?.family?.toLowerCase() ?? "";
     if (family.includes("claude") || family.includes("anthropic")) return "anthropic";

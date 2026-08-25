@@ -1476,6 +1476,11 @@ npm run build
 # ⚠️ 切勿加 --no-dependencies：会漏掉 @microsoft/tiktokenizer（dependencies 唯一运行时依赖），
 #    安装后 activate() 在注册命令前抛 Cannot find module '@microsoft/tiktokenizer' 崩溃，
 #    表现为所有 opencodego.* 命令 not found。测试窗口读源码 out/ 有 node_modules 所以正常。
+# 📦 打包产物必须统一输出到工作区根目录 C:\Users\wzx\Documents\vscode-plugin\，
+#    绝对路径：C:\Users\wzx\Documents\vscode-plugin\opencode-go-copilot-provider-<版本>.vsix
+#    不要留在 opencode-go-copilot-src\ 内；【用户约定】以后所有编译/打包产物一律放在 C:\Users\wzx\Documents\vscode-plugin\
+#    例如：npx --yes @vscode/vsce package -o ..\opencode-go-copilot-provider-1.10.10.vsix
+#          npx --yes @vscode/vsce package -o C:\Users\wzx\Documents\vscode-plugin\opencode-go-copilot-provider-1.10.10.vsix
 ```
 
 ### 5.2 编译配置 (tsconfig.json)

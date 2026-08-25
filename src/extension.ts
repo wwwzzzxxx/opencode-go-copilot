@@ -235,6 +235,60 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    // Register the setMaxContextLength command: user can pick a preset or enter custom value
+    context.subscriptions.push(
+        vscode.commands.registerCommand("opencodego.setMaxContextLength", async () => {
+            const config = vscode.workspace.getConfiguration();
+            const current = config.get<number>("opencodego.maxContextLength", 0);
+            const presets: Array<{ label: string; value: number; description?: string }> = [
+                { label: l10n("Unlimited (follow model)"), value: 0, description: l10n("0 - no cap") },
+                { label: "128K", value: 128000 },
+                { label: "200K", value: 200000 },
+                { label: "300K", value: 300000 },
+                { label: "500K", value: 500000 },
+                { label: "1M", value: 1000000 },
+            ];
+            interface PickItem extends vscode.QuickPickItem {
+                value?: number;
+                isCustom?: boolean;
+            }
+            const items: PickItem[] = presets.map((p) => ({
+                label: `${p.label}${p.value === current ? l10n(" (current)") : ""}`,
+                description: p.description ?? (p.value === 0 ? "" : `${p.value}`),
+                value: p.value,
+            }));
+            items.push({ label: "", kind: vscode.QuickPickItemKind.Separator } as PickItem);
+            items.push({ label: "$(pencil) " + l10n("Custom value..."), isCustom: true, description: l10n("Enter number of tokens, 0 for unlimited") });
+
+            const picked = await vscode.window.showQuickPick(items, {
+                title: l10n("Set Maximum Context Length"),
+                placeHolder: l10n("Select a limit (only caps models larger than this)"),
+                ignoreFocusOut: true,
+            });
+            if (!picked) return;
+            let newVal: number | undefined;
+            if (picked.isCustom) {
+                const input = await vscode.window.showInputBox({
+                    title: l10n("Enter maximum context length"),
+                    prompt: l10n("Enter tokens (e.g. 200000) or 0 for unlimited"),
+                    value: String(current ?? 0),
+                    validateInput: (val) => {
+                        const n = Number(val.trim());
+                        if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return l10n("Please enter a non-negative integer (0 = unlimited)");
+                        return null;
+                    },
+                    ignoreFocusOut: true,
+                });
+                if (input === undefined) return;
+                newVal = Math.floor(Number(input.trim()));
+            } else {
+                newVal = picked.value ?? 0;
+            }
+            await config.update("opencodego.maxContextLength", newVal, vscode.ConfigurationTarget.Global);
+            vscode.window.showInformationMessage(newVal === 0 ? l10n("Maximum context length cleared (unlimited)") : l10nFormat("Maximum context length set to {0}", String(newVal)));
+        })
+    );
+
     // Warm up model discovery on every activation (non-blocking, fire-and-forget).
     // VS Code may fire several activation events at startup; the short refresh
     // interval in prepareLanguageModelChatInformation (default 1 minute) dedupes

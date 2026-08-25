@@ -330,6 +330,34 @@ export abstract class CommonApi<TMessage, TRequestBody> {
      * @param text The thinking text to buffer
      * @param progress Progress reporter for parts
      */
+    /**
+     * Ensure the thinking buffer ends with a newline separator before the next
+     * distinct reasoning summary chunk is appended (A+B+C → A\nB\nC).
+     * No-op if buffer is empty or already ends with a newline.
+     */
+    protected ensureThinkingNewline(): void {
+        // Display-only separator — must NOT mutate _capturedReasoningContent
+        // (it is replayed verbatim for cache / reasoning continuity).
+        // VS Code renders thinking as MarkdownString, so single "\n"
+        // is a soft break (ignored). Use "\n\n" for a visible paragraph break.
+        if (this._thinkingBuffer.length > 0) {
+            if (this._thinkingBuffer.endsWith("\n\n")) return;
+            if (this._thinkingBuffer.endsWith("\n")) {
+                this._thinkingBuffer += "\n";
+            } else {
+                this._thinkingBuffer += "\n\n";
+            }
+            return;
+        }
+        // Buffer already flushed (empty) but we have emitted thinking before —
+        // next chunk must start with paragraph break, otherwise VS Code
+        // concatenates two LanguageModelThinkingPart emissions directly
+        // via appendMarkdownString(md1.value + md2.value) (e.g. "40.Breaking").
+        if (this._hasEmittedThinking) {
+            this._thinkingBuffer = "\n\n";
+        }
+    }
+
     protected bufferThinkingContent(text: string, progress: Progress<LanguageModelResponsePart>): void {
         this._hasEmittedThinking = true;
         if (!this._currentThinkingId) {

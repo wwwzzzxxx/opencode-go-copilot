@@ -12,6 +12,7 @@
  * all resolution and build logic is shared.
  */
 
+import * as vscode from "vscode";
 import type { LanguageModelChatInformation } from "vscode";
 import type { OpenCodeGoModelItem } from "./types";
 import { l10n } from "./localize";
@@ -76,6 +77,20 @@ export interface ModelMeta {
  * catalog; big-pickle is a long-standing free model with a plain ID).
  */
 const ZEN_FREE_EXTRA_IDS: ReadonlySet<string> = new Set(["big-pickle"]);
+
+function getMaxContextLengthOverride(): number | undefined {
+    const v = vscode.workspace.getConfiguration("opencodego").get<number>("maxContextLength", 0);
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return Math.floor(v);
+    return undefined;
+}
+
+function applyMaxContextLengthCap(meta: ModelMeta): ModelMeta {
+    const cap = getMaxContextLengthOverride();
+    if (cap !== undefined && meta.contextLength > cap) {
+        return { ...meta, contextLength: cap };
+    }
+    return meta;
+}
 
 /**
  * Whether a model ID refers to an OpenCode Zen free model:
@@ -152,9 +167,11 @@ function applyOverride(meta: ModelMeta, override?: ModelMetaOverride): ModelMeta
 
 /**
  * Resolve the final metadata for a model through the merge chain.
+ * Applies user-configured maxContextLength cap (only when model > cap).
  */
 export function resolveModelMeta(providerId: ProviderId, modelId: string): ModelMeta {
-    return applyOverride(resolveFromCatalog(providerId, modelId), MODEL_OVERRIDES[modelId]);
+    const merged = applyOverride(resolveFromCatalog(providerId, modelId), MODEL_OVERRIDES[modelId]);
+    return applyMaxContextLengthCap(merged);
 }
 
 /**

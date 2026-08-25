@@ -265,7 +265,7 @@ export async function maybeStartLocalProxy(secrets: vscode.SecretStorage): Promi
             server.off("error", onError);
             upstreamServer = server;
             g.__opencodeProxy.server = server;
-            try { (server as any).unref?.(); } catch {}
+            try { (server as any).unref?.(); } catch { /* unref optional */ }
             logger.info("proxy.started", { port: PROXY_PORT, host: "127.0.0.1", pid: process.pid });
             clearTunnelProbeCache();
             resolve();

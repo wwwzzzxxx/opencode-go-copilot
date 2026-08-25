@@ -66,6 +66,7 @@
 	"config.vpnProxyUrl.desc": "HTTP proxy URL for VPN routing overseas models (e.g. Clash at 127.0.0.1:7890).",
 	"config.vpnProxyModels.desc": "Model id substrings routed via the VPN proxy.",
 	"command.setModelPreset": "Set Model Temperature Preset",
+	"command.setMaxContextLength": "Set Maximum Context Length",
 	"walkthrough.title": "OpenCode Go for Copilot Chat",
 	"walkthrough.description": "Set up OpenCode Go models in Copilot Chat.",
 	"walkthrough.setApiKey.title": "Set your OpenCode Go API key",

@@ -49,6 +49,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
      */
     private _hasImages = false;
 
+    /** Last reasoning summary_index seen (Responses API) for A/B/C newline separation */
+    private _lastReasoningSummaryIndex: number | null = null;
+
     /**
      * Convert VS Code chat request messages into OpenAI-compatible message objects.
      * For non-vision models, images are replaced with text references and stored
@@ -466,6 +469,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
         // Reset mutable state to prevent carryover from previous rounds
         this._resetStreamState();
+        this._lastReasoningSummaryIndex = null;
         // Record the baseline of _capturedReasoningContent (NOT reset by _resetStreamState
         // because it must persist across ask_image sub-rounds). Delta = per-round thinking.
         this._thinkingCharsAtStart = this._capturedReasoningContent.length;
@@ -589,10 +593,28 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
     ): Promise<boolean> {
         const type = event.type as string | undefined;
         if (!type) return false;
-        // reasoning deltas
+        // New summary part started → display-only separator (no _captured mutation for cache)
+        if (type === "response.reasoning_summary_part.added") {
+            const idx = event.summary_index as number | undefined;
+            if (idx !== undefined) {
+                if (idx > 0 && this._lastReasoningSummaryIndex !== idx) {
+                    this.ensureThinkingNewline();
+                }
+                this._lastReasoningSummaryIndex = idx;
+            }
+            return true;
+        }
+        // reasoning deltas — display separator only, _captured stays verbatim for cache
         if (type === "response.reasoning_text.delta" || type === "response.reasoning_summary.delta" || type === "response.reasoning_summary_text.delta") {
             const delta = event.delta as string | undefined;
             if (delta) {
+                const idx = event.summary_index as number | undefined;
+                if (idx !== undefined && this._lastReasoningSummaryIndex !== null && idx !== this._lastReasoningSummaryIndex) {
+                    this.ensureThinkingNewline();
+                    this._lastReasoningSummaryIndex = idx;
+                } else if (idx !== undefined && this._lastReasoningSummaryIndex === null) {
+                    this._lastReasoningSummaryIndex = idx;
+                }
                 this._capturedReasoningContent += delta;
                 this.bufferThinkingContent(delta, progress);
                 return true;
@@ -678,7 +700,8 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                 const details: Array<ReasoningDetail> = maybeReasoningDetails as Array<ReasoningDetail>;
                 const sortedDetails = details.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
 
-                for (const detail of sortedDetails) {
+                for (let i = 0; i < sortedDetails.length; i++) {
+                    const detail = sortedDetails[i];
                     let extractedText = "";
                     if (detail.type === "reasoning.summary") {
                         extractedText = (detail as ReasoningSummaryDetail).summary;
@@ -691,6 +714,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                     }
 
                     if (extractedText) {
+                        if (i > 0) {
+                            this.ensureThinkingNewline();
+                        }
                         this.bufferThinkingContent(extractedText, progress);
                         emitted = true;
                     }

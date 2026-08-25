@@ -16,7 +16,7 @@
     "thinking",
     "git-commit"
   ],
-  "version": "1.0.0",
+  "version": "1.0.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/wwwzzzxxx/opencode-go-copilot"
@@ -80,6 +80,11 @@
         "command": "opencodego.setModelPreset",
         "category": "%commandCategory%",
         "title": "%command.setModelPreset%"
+      },
+      {
+        "command": "opencodego.setMaxContextLength",
+        "category": "%commandCategory%",
+        "title": "%command.setMaxContextLength%"
       },
       {
         "command": "opencodego.updateModelList",
@@ -328,6 +333,13 @@
           "type": "boolean",
           "default": false,
           "description": "%config.enableZenFreeModels.desc%"
+        },
+        "opencodego.maxContextLength": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "最长上下文长度（tokens）。为 0 时不限制；仅当模型本身上下文大于该值时覆盖为该值，用于节省成本或按需收窄上下文。",
+          "markdownDescription": "最长上下文长度（tokens）。`0` 表示不限制；仅当模型本身上下文大于该值时覆盖为该值，可用于节省成本或在 200K/300K 等档位自主收窄上下文。"
         },
         "opencodego.enableAutoModelDiscovery": {
           "type": "boolean",

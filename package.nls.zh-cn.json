@@ -66,6 +66,7 @@
 	"config.vpnProxyUrl.desc": "海外模型 VPN 代理的 HTTP 代理地址（如 Clash 的 http://127.0.0.1:7890）。",
 	"config.vpnProxyModels.desc": "走 VPN 代理的模型 ID 子串。",
 	"command.setModelPreset": "设置模型温度预设",
+	"command.setMaxContextLength": "设置最长上下文长度",
 	"walkthrough.title": "OpenCode Go for Copilot Chat",
 	"walkthrough.description": "在 Copilot Chat 中配置 OpenCode Go 模型。",
 	"walkthrough.setApiKey.title": "设置你的 OpenCode Go API 密钥",
