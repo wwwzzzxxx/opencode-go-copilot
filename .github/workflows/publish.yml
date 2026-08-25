@@ -23,4 +23,13 @@ jobs:
       - name: Compile
         run: npm run compile
       - name: Publish to Marketplace (Trusted Publishing)
-        run: npx --yes @vscode/vsce@latest publish --azure-credential --no-dependencies
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -n "$VSCE_PAT" ]; then
+            echo "Publishing with PAT (trusted publishing not yet enrolled)"
+            npx --yes @vscode/vsce@latest publish -p "$VSCE_PAT" --no-dependencies
+          else
+            echo "VSCE_PAT not set, trying Entra ID (trusted publishing)"
+            npx --yes @vscode/vsce@latest publish --azure-credential --no-dependencies
+          fi
