@@ -16,7 +16,7 @@
     "thinking",
     "git-commit"
   ],
-  "version": "1.0.4",
+  "version": "1.0.6",
   "repository": {
     "type": "git",
     "url": "https://github.com/wwwzzzxxx/opencode-go-copilot"
@@ -479,7 +479,7 @@
     "test:vision-history": "npm run compile && node scripts/test-vision-history.mjs",
     "lint": "eslint",
     "watch": "tsc -watch -p ./",
-    "build": "npx @vscode/vsce package -o extension.vsix",
+    "build": "node scripts/build-vsix.mjs",
     "postinstall": "node scripts/copy-tokenizer.js"
   },
   "dependencies": {
