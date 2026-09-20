@@ -67,7 +67,7 @@
 
 > Go 服务商当前收录模型包括但不限于：`glm-5/5.1/5.2`、`kimi-k3/k2.5/k2.6/k2.7-code`、`deepseek-v4-pro/flash`、`mimo-v2-pro/omni/v2.5-pro/v2.5`、`minimax-m3/m2.7/m2.5`、`qwen3.5/3.6/3.7-plus`、`qwen3.7-max`、`qwen3.8-max`、`gpt-5.6-luna`、`grok-4.5`、`hy3` 等。实际显示取决于目录收录与 API 可用性。
 > Zen 免费模型（`-free` 后缀）包括但不限于：`big-pickle`、`deepseek-v4-flash-free`、`minimax-m3-free`、`minimax-m2.5-free`、`ring-2.6-1t-free`、`nemotron-3-super-free` 等。
-> 兜底快照：`src/hardcodedModelList.ts` 内置 2026-08-23 的官方目录快照，含 opencode-go（28 个）与 opencode（93 个，其中 28 个 `-free` 免费模型）的**完整模型元数据**（limit、cost、reasoning_options、attachment、modalities 等），仅作官方目录与镜像均不可达时的最后防线。发布构建（`.github/workflows/release.yml`）会先运行 `scripts/update-hardcoded-catalog.mjs` 自动刷新该快照（拉取官方目录 → 提取两个服务商 → 重写文件），失败时保留旧快照不阻断构建；数据有变化时随版本号变更在同一 commit 推送。
+> 兜底快照：`src/hardcodedModelList.ts` 内置 2026-09-08 的官方目录快照，含 opencode-go（35 个）与 opencode（102 个）的**完整模型元数据**（limit、cost、reasoning_options、attachment、modalities 等），仅作官方目录与镜像均不可达时的最后防线。发布构建（`.github/workflows/release.yml`）会先运行 `scripts/update-hardcoded-catalog.mjs` 自动刷新该快照（拉取官方目录 → 提取两个服务商 → 重写文件），失败时保留旧快照不阻断构建；数据有变化时随版本号变更在同一 commit 推送。
 
 #### 思考强度自动推导（`reasoning_options`）
 
@@ -330,6 +330,70 @@ provideLanguageModelChatResponse(model, messages, options, progress, token)
 - **参数保留**: 每轮保留 temperature、top_p、thinking 模式等原始参数
 - **DeepSeek 兼容**: 对 DeepSeek 模型的 assistant tool_call 消息注入 reasoning_content 字段
 
+### 2.7 原生 PDF（native PDF）流程
+
+模型直接读 PDF（Responses 的 `input_file`）——不走 OCR、不走文本抽取、不走视觉代理。
+
+**两条入口，都由"用户确实附了这个文件"触发**：
+
+```
+① 本地拖拽（仅本地窗口）
+  └── chatStore.findAttachedPdfPaths(userText)                src/pdf/chatStore.ts
+       ├── 位置: <userData>/User/workspaceStorage/<hash>/chatSessions/*.jsonl
+       │        （extension.ts 用 context.storageUri 推导）
+       ├── 匹配: 用当前用户消息文本匹配 requests[].message.text（归一化空白；失败退化为
+       │        包含匹配，needle ≥16 字符）——按文本匹配而非"最新文件"，同时排除串会话/串请求
+       ├── 取值: request.variableData.variables[].value.fsPath（**只认这一处**）
+       │        ⚠️ 不要扫 result.metadata.toolCallResults / response[].resultDetails 的 anchor
+       │           ——那是 file_search 的结果，不是附件
+       ├── 缓存: 按文件 mtime 缓存解析结果；单文件 ≤24MB；任何异常都软着陆
+       └── 目录不存在（远端窗口）→ 激活时记一行 exists:false，之后每次查询直接返回空
+② 命令 `OpenCodeGo: Attach PDF`（opencodego.attachPdf，任何窗口，含 SSH）
+  └── pickPdfFileToAttach() → 文件对话框（远端窗口浏览远端文件系统）→ 校验 → 存 pending 队列
+       └── 随**下一条**用户消息挂 input_file（takePendingPdfAttachments）
+  └── 共同出口: 校验(存在/非空/≤pdfMaxMB/%PDF 魔数) → 读盘 → base64 → 进程内缓存(64MB 上限)
+  └── provider.ts remap 块（apiMode === "openai-responses"）: input_file 原样进 responses input
+       └── logger.info("pdf.wire", ...) 记录真正进请求体的附件
+```
+
+**能力判定（自动，不需要逐个模型配置）**
+- `modelsDev.ts: inferPdf(entry)` —— `modalities.input` 含 `"pdf"` 即为真（线上目录里 opencode-go 有 5 个：muse-spark-1.2/1.3-contributor、gpt-5.6-luna、glm-5.3-flash、mimo-v2-omni）
+- `catalogModels.ts` 合并链：catalog → `MODEL_OVERRIDES[id].pdf` 覆盖（目录判断有误时才需要手写）
+- `provider.ts` 最终门控：`um.pdf && apiMode === "openai-responses"`（chat-completions 协议带不了 document）
+
+**设置**
+- `opencodego.pdfAttach`（默认 true）：总开关
+- `opencodego.pdfFromChatStore`（默认 true）：① 拖拽通道（仅本地窗口）
+- `opencodego.pdfMaxMB`（默认 20）：单文件上限
+
+**日志（输出 → OpenCodeGo）**
+- `pdf.attach`（info）：读到了什么、多少字节、是否命中缓存
+- `pdf.chatStore.root` / `.hit` / `.miss`（info/debug）：拖拽通道的定位与匹配结果
+- `pdf.wire`（info）：真正进请求体的 `input_file` 列表
+- `pdf.skip`（info/debug）：跳过原因
+
+**已删除的通道（2026-09-20 用户明确要求，不要加回来；测试有断言）**
+1. ~~扫消息文本里的 `.pdf` 路径~~ —— 要求用户写路径，SSH 下不可行
+2. ~~拦截模型对 `.pdf` 的 `read_file`~~ —— 会让插件读用户没打算发送的文件
+
+**为什么拖拽在 SSH 远端窗口无效**
+会话记录由**本地工作台**写（ReID 工作区 32 个会话在客户端 `%APPDATA%`），而扩展在远端跑；远端 `workspaceStorage` 里没有 `chatSessions`。Copilot Chat 自己的 `transcripts/*.jsonl` 里 `user.message` 事件带 `attachments` 字段但**恒为空**（真实拖拽样本验证过），`debug-logs/` 也无附件数据。
+
+**为什么第三方 provider 拿不到聊天框附件**
+- `convertToApiChatMessage`（`extChatEndpoint.ts:352`）只实现 Text/Image/CacheBreakpoint/Opaque，**`Document` 是唯一没分支的那个** → 静默丢弃（microsoft/vscode#336694）
+- `LanguageModelChatRequestMessage` 只有 role/content/name；`ProvideLanguageModelChatResponseOptions` 只有 modelOptions/tools/toolMode；proposed API 无引用/附件字段
+- 原生 Copilot 模型能读附件（走 VS Code 自己的 `responsesApi.ts`），第三方 provider 不能——限制在 provider，不在 VS Code
+
+**BYOK 绕行方案：评估过，2026-09-20 放弃（别重开）**
+思路是"把 muse 配成 Custom Endpoint（BYOK）模型，让 VS Code 自己的 `responsesApi.ts` 处理 PDF"，需要：`apiType: "responses"` + `chat.modelCapabilityOverrides` 把 family 伪装成 `gpt-5.6`（issue #324961 原文推荐）+ 网关要求的 `x-opencode-session` 头。实测结论：
+- 该头**必需**（不带 → 400 `MissingSessionID`），但**固定值被接受**（连发两次均 200）
+- BYOK 的 `requestHeaders` 是静态映射、**无变量插值**（`_sanitizeCustomHeaders` 只清洗），拿不到每会话 id
+- 曾实现"由插件 8900 代理补每会话 id"（从第一条 user 消息派生），用户判断整体太麻烦 → **已完整回退**（`proxyManager.ts` 现在与 HEAD 一致）
+- 代价也是原因：muse 从插件挪走会失去状态栏 token 计数/缓存/pdfMaxMB，family 伪装还会影响 prompt resolver/tool search 等启发式
+
+**代价**
+一页 ≈ 2700 input token（12 页 ≈ 3.2 万/轮），附件每轮重发；prompt cache 隔一会儿能命中（实测 ~98%），秒级连续重发命中不到。
+
 ### 2.6 Git 提交消息生成流程
 
 ```
@@ -398,6 +462,9 @@ src/
 │   ├── historyCodec.ts                   # 视觉工具历史序列化、校验和标准 API 消息重建
 │   ├── historyPart.ts                    # VS Code vision history DataPart 创建与解析
 │   └── imageProxy.ts                     # 图片代理核心 (ask_image)
+├── pdf/
+│   ├── attach.ts                         # 原生 PDF 附件：读盘校验、缓存、命令入口、input_file 构造
+│   └── chatStore.ts                      # 本地拖拽：从 Copilot Chat 会话记录还原附件路径（仅本地窗口）
 └── resources/
     └── walkthrough/                      # 安装欢迎页 (Walkthrough) 文档
         ├── set-api-key.md                # 步骤 1：设置 API Key
@@ -548,7 +615,7 @@ src/
 
 #### `const MODEL_OVERRIDES: Record<string, ModelMetaOverride>`
 
-覆盖表（当前 8 条）：`minimax-m3`（adaptive + anthropic + `reasoning_split`）、`minimax-m2.7`（anthropic + `reasoning_split`）、`minimax-m2.5`（anthropic）、`qwen3.7-max`/`qwen3.7-plus`/`qwen3.6-plus`/`qwen3.5-plus`（anthropic）、`glm-5.2`（默认 effort=high）。Zen 免费模型（`-free` 后缀）共用同一命名空间，需要时可在此追加。
+覆盖表（当前 12 条）：`minimax-m3`（adaptive + anthropic + `reasoning_split`）、`minimax-m2.7`（anthropic + `reasoning_split`）、`minimax-m2.5`（anthropic）、`qwen3.7-max`/`qwen3.7-plus`/`qwen3.6-plus`/`qwen3.5-plus`（anthropic）、`glm-5.2`（默认 effort=high）、`muse-spark-1.2-contributor`/`-free` 与 `muse-spark-1.3-contributor`/`-free`（openai-responses，`chat/completions` 图文 400 故走 `/responses`）、`ox-alpha-free`/`x-preview-f-free`（displayName 后缀区分 Go/Zen 来源）。Zen 免费模型（`-free` 后缀）共用同一命名空间，需要时可在此追加。
 
 ---
 

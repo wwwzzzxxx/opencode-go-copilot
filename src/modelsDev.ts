@@ -353,6 +353,17 @@ export function inferVision(entry: ModelsDevEntry): boolean {
 }
 
 /**
+ * Check if a model accepts PDF documents as input, from its catalog entry.
+ *
+ * `modalities.input` is the authoritative signal — e.g. muse-spark declares
+ * ["text","image","video","pdf","audio"]. `attachment` is deliberately not used:
+ * it only means "accepts attachments", which in practice means images.
+ */
+export function inferPdf(entry: ModelsDevEntry): boolean {
+    return entry.modalities?.input?.includes("pdf") === true;
+}
+
+/**
  * Extract the thinking budget range from a catalog model entry.
  * Returns undefined if no `budget_tokens` reasoning option is defined.
  */

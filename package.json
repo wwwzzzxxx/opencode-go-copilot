@@ -16,7 +16,7 @@
     "thinking",
     "git-commit"
   ],
-  "version": "1.0.6",
+  "version": "1.0.7",
   "repository": {
     "type": "git",
     "url": "https://github.com/wwwzzzxxx/opencode-go-copilot"
@@ -53,6 +53,11 @@
         "command": "opencodego.setApiKey",
         "category": "%commandCategory%",
         "title": "%command.setApiKey%"
+      },
+      {
+        "command": "opencodego.attachPdf",
+        "category": "%commandCategory%",
+        "title": "%command.attachPdf%"
       },
       {
         "command": "opencodego.getApiKey",
@@ -434,6 +439,23 @@
           "type": "boolean",
           "default": false,
           "description": "%config.visionProxyThinking.desc%"
+        },
+        "opencodego.pdfAttach": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.pdfAttach.desc%"
+        },
+        "opencodego.pdfFromChatStore": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.pdfFromChatStore.desc%"
+        },
+        "opencodego.pdfMaxMB": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 512,
+          "markdownDescription": "%config.pdfMaxMB.desc%"
         },
         "opencodego.enableThirdPartyTokenIndicator": {
           "type": "boolean",

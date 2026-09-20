@@ -38,6 +38,40 @@ import { logger } from "./logger";
 import { l10n } from "./localize";
 
 /**
+ * Strip binary payloads from a request body before it goes into the log.
+ *
+ * A PDF attachment is inlined as base64 (`input_file.file_data`), so logging the
+ * raw body would dump megabytes into the output channel and copy the document
+ * into the log file. The sizes stay, so the log still proves what was attached.
+ */
+function redactBinaryParts(body: unknown): unknown {
+    try {
+        const clone = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+        const messages = clone?.messages;
+        const lists: unknown[] = Array.isArray(messages) ? messages : [];
+        if (Array.isArray(clone?.input)) {
+            lists.push(...(clone.input as unknown[]));
+        }
+        for (const message of lists) {
+            const content = (message as { content?: unknown })?.content;
+            if (!Array.isArray(content)) continue;
+            for (const part of content) {
+                const p = part as { type?: string; file_data?: string; image_url?: { url?: string } };
+                if (typeof p?.file_data === "string") {
+                    p.file_data = `<application/pdf base64, ${p.file_data.length} chars>`;
+                }
+                if (typeof p?.image_url?.url === "string" && p.image_url.url.startsWith("data:")) {
+                    p.image_url.url = `<data uri, ${p.image_url.url.length} chars>`;
+                }
+            }
+        }
+        return clone;
+    } catch {
+        return "<unserializable request body>";
+    }
+}
+
+/**
  * Native Copilot Token Indicator
  *
  * Reports token usage to the Copilot Chat's built-in token indicator by emitting
@@ -277,6 +311,10 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
             const modelConfig = {
                 includeReasoningInRequest: um?.include_reasoning_in_request ?? true,
                 vision: um?.vision ?? false,
+                // Native PDF input: the catalog declares it (modalities.input contains "pdf",
+                // or a MODEL_OVERRIDES entry forces it) and the wire protocol must be able to
+                // carry a document part — only the Responses API can.
+                pdf: (um?.pdf ?? false) && apiMode === "openai-responses",
             };
 
             // Read Advanced Token indicator setting
@@ -432,7 +470,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                 const url = normalizedBaseUrl.endsWith("/v1")
                     ? `${normalizedBaseUrl}/messages`
                     : `${normalizedBaseUrl}/v1/messages`;
-                logger.debug("request.body", { url, requestBody });
+                logger.debug("request.body", { url, requestBody: redactBinaryParts(requestBody) });
                 const response = await executeWithRetry(async () => {
                     const res = await dispatchFetch(url, {
                         method: "POST",
@@ -576,9 +614,11 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                                     const parts = (c as Array<{ type?: string; text?: string }>).filter((p) => p.type === "text" && p.text).map((p) => ({ type: "output_text", text: p.text }));
                                     if (parts.length) responsesInput.push({ role: "assistant", content: parts });
                                 } else {
-                                    const parts = (c as Array<{ type?: string; text?: string; image_url?: { url?: string } }>).map((p) => {
+                                    const parts = (c as Array<{ type?: string; text?: string; image_url?: { url?: string }; filename?: string; file_data?: string }>).map((p) => {
                                         if (p.type === "text" && p.text) return { type: "input_text", text: p.text };
                                         if (p.type === "image_url" && p.image_url?.url) return { type: "input_image", image_url: p.image_url.url };
+                                        // Native PDF attachment (produced by openaiApi.convertMessages)
+                                        if (p.type === "input_file" && p.file_data) return { type: "input_file", filename: p.filename ?? "document.pdf", file_data: p.file_data };
                                         return null;
                                     }).filter(Boolean);
                                     if (parts.length) responsesInput.push({ role, content: parts });
@@ -590,6 +630,16 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     const sys = responsesInput.filter((x) => x.role === "system");
                     const nonSys = responsesInput.filter((x) => x.role !== "system");
                     const instructions = sys.map((x) => ((x.content as Array<{ text?: string }>) ?? []).map((p) => p.text ?? "").join("\n")).join("\n") || undefined;
+                    // Prove on the wire what was attached, without needing debug log level.
+                    const pdfInputs = responsesInput.flatMap((x) => Array.isArray(x.content)
+                        ? (x.content as Array<{ type?: string; filename?: string; file_data?: string }>).filter((p) => p?.type === "input_file")
+                        : []);
+                    if (pdfInputs.length > 0) {
+                        logger.info("pdf.wire", {
+                            count: pdfInputs.length,
+                            files: pdfInputs.map((p) => ({ filename: p.filename, base64Chars: p.file_data?.length ?? 0 })),
+                        });
+                    }
                     // Responses tools are { type:"function", name, description, parameters }
                     const responsesTools = Array.isArray(requestBody.tools)
                         ? (requestBody.tools as Array<{ type?: string; function?: { name?: string; description?: string; parameters?: unknown } }>).map((t) => {
@@ -650,7 +700,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                             ?? (requestBody as Record<string, unknown>).max_completion_tokens,
                     });
                 } catch { /* ignore */ }
-                logger.debug("request.body", { url, requestBody });
+                logger.debug("request.body", { url, requestBody: redactBinaryParts(requestBody) });
                 const response = await executeWithRetry(async () => {
                     const res = await dispatchFetch(url, {
                         method: "POST",

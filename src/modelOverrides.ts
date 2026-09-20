@@ -19,6 +19,11 @@
 export interface ModelMetaOverride {
     displayName?: string;
     vision?: boolean;
+    /**
+     * Force native PDF input on/off for this model, overriding the catalog's
+     * `modalities.input` signal. Only meaningful for `openai-responses` models.
+     */
+    pdf?: boolean;
     thinkingMode?: "switchable" | "always" | "adaptive";
     supportedReasoningEfforts?: string[];
     defaultReasoningEffort?: string;
@@ -72,6 +77,8 @@ export const MODEL_OVERRIDES: Record<string, ModelMetaOverride> = {
     // ── Muse Spark ── Free / Go 均为 OpenAI Responses (input_image)；chat/completions image_url 在 go 上 400
     "muse-spark-1.2-contributor": { apiMode: "openai-responses" as const },
     "muse-spark-1.2-contributor-free": { apiMode: "openai-responses" as const },
+    "muse-spark-1.3-contributor": { apiMode: "openai-responses" as const },
+    "muse-spark-1.3-contributor-free": { apiMode: "openai-responses" as const },
 
     // ── Ox Alpha Free ── Go / Zen 各有一个，ID 不同但名称相同，加后缀区分来源
     //    Go 侧：ox-alpha-free（opencode-go provider），Zen 侧：x-preview-f-free（opencode provider）

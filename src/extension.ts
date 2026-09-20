@@ -10,6 +10,8 @@ import { abortCommitGeneration, generateCommitMsg } from "./gitCommit/commitMess
 import { TokenizerManager } from "./tokenizer/tokenizerManager";
 import { prepareLanguageModelChatInformation, resetAutoDiscoveryState } from "./provideModel";
 import { maybeStartLocalProxy } from "./proxyManager";
+import { pickPdfFileToAttach } from "./pdf/attach";
+import { setChatSessionRoot } from "./pdf/chatStore";
 
 // ---- Walkthrough / Welcome constants ----
 
@@ -23,6 +25,12 @@ export function activate(context: vscode.ExtensionContext) {
     // Initialize logger
     logger.init();
     logger.info("extension.activate", { version: VersionManager.getVersion(), remoteName: vscode.env.remoteName ?? null, uiKind: (vscode.env as any).uiKind ?? null });
+
+    // Point dragged-PDF recovery at this window's chat session store
+    // (`<userData>/User/workspaceStorage/<hash>/chatSessions`). In a remote window that
+    // directory does not exist here — the store lives on the client — and the lookup
+    // degrades to a no-op.
+    setChatSessionRoot(context.storageUri?.fsPath);
 
     // Start local proxy for SSH remote forwarding (only runs on UI host, no-op on remote)
     void maybeStartLocalProxy(context.secrets);
@@ -94,6 +102,17 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
             vscode.window.showInformationMessage(`OpenCode Go: ${formatUsageSummary(usage)}`);
+        })
+    );
+
+    // Command to attach a PDF by hand. VS Code never tells a third-party model provider
+    // which PDF was dragged into the chat (no path, no bytes — see src/pdf/), so this is
+    // the reliable way to hand a document to a PDF-capable model natively.
+    context.subscriptions.push(
+        vscode.commands.registerCommand("opencodego.attachPdf", async () => {
+            const configured = vscode.workspace.getConfiguration("opencodego").get<number>("pdfMaxMB", 20);
+            const maxBytes = (typeof configured === "number" && configured > 0 ? configured : 20) * 1024 * 1024;
+            await pickPdfFileToAttach(maxBytes);
         })
     );
 

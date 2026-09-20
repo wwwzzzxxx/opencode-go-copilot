@@ -8,6 +8,8 @@ import {
 } from "vscode";
 
 import type { OpenCodeGoModelItem } from "../types";
+import { pdfAttachmentFromDataPart, readPdfAttachmentByPath, takePendingPdfAttachments, type PdfAttachment } from "../pdf/attach";
+import { findAttachedPdfPaths } from "../pdf/chatStore";
 
 import type {
     OpenAIChatMessage,
@@ -56,10 +58,12 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
      * Convert VS Code chat request messages into OpenAI-compatible message objects.
      * For non-vision models, images are replaced with text references and stored
      * in instance-local _localImages for the ask_image tool.
+     * For PDF-capable models (`pdf`), a PDF is attached only when the user chose it
+     * explicitly (`OpenCodeGo: Attach PDF`) or when VS Code delivered its bytes.
      */
     async convertMessages(
         messages: readonly LanguageModelChatRequestMessage[],
-        modelConfig: { includeReasoningInRequest: boolean; vision?: boolean }
+        modelConfig: { includeReasoningInRequest: boolean; vision?: boolean; pdf?: boolean }
     ): Promise<OpenAIChatMessage[]> {
         const modelSupportsVision = modelConfig.vision !== false;
         const out: OpenAIChatMessage[] = [];
@@ -121,10 +125,35 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
         // If direct mode, treat all models as vision for conversion purposes
         const effectiveVision = modelConfig.vision !== false || nonVisionDirect;
 
+        // Native PDF attachments. `modelConfig.pdf` already means "the catalog says this
+        // model reads PDFs AND the wire protocol is the Responses API"; the setting is a
+        // master switch so the feature can be turned off without repackaging.
+        const pdfEnabled = modelConfig.pdf === true && visionCfg.get<boolean>("pdfAttach", true);
+        // Dragged-in attachments carry no path in the provider payload, so the path is
+        // recovered from Copilot Chat's own session record (see src/pdf/chatStore.ts).
+        // Local windows only — remote windows keep that record on the client.
+        const pdfFromChatStore = pdfEnabled && visionCfg.get<boolean>("pdfFromChatStore", true);
+        const pdfMaxMB = visionCfg.get<number>("pdfMaxMB", 20);
+        const pdfMaxBytes = (typeof pdfMaxMB === "number" && pdfMaxMB > 0 ? pdfMaxMB : 20) * 1024 * 1024;
+        // Paths already attached during this request — never send the same document twice.
+        const attachedPdfPaths = new Set<string>();
+        // PDFs queued by the `Attach PDF` command ride on the current (last) user message.
+        const pendingPdf = pdfEnabled ? takePendingPdfAttachments() : [];
+        let lastUserIndex = -1;
+        if (pendingPdf.length > 0) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+                if (mapRole(messages[i]) === "user") {
+                    lastUserIndex = i;
+                    break;
+                }
+            }
+        }
+
         for (const m of messages) {
             const role = mapRole(m);
             const textParts: string[] = [];
             const imageParts: vscode.LanguageModelDataPart[] = [];
+            const directPdfParts: PdfAttachment[] = [];
             const toolCalls: OpenAIToolCall[] = [];
             const toolResults: { callId: string; content: string | ChatMessageContent[] }[] = [];
             const reasoningParts: string[] = [];
@@ -151,6 +180,13 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                         // Use strong directive language so the model knows it MUST use ask_image
                         textParts.push(`\n[The user sent an image (imageIndex=${imageIndex}). I am a text-only model and CANNOT see images directly. I MUST call the ask_image tool to learn about it.\n\nRecommended strategy:\n1. First call ask_image for a brief description to get an overview of the image.\n2. Then call ask_image again with specific questions about details you need (e.g., colors, text content, UI elements, error messages, or any other visible information).\n]`);
                         imageIndex++;
+                    }
+                } else if (pdfEnabled && part instanceof vscode.LanguageModelDataPart && (part.mimeType === "application/pdf" || part.mimeType === "application/x-pdf")) {
+                    // Defensive: if PDF bytes ever do arrive as a data part (a tool result
+                    // today, or a future VS Code version), use them instead of requiring a path.
+                    const attachment = pdfAttachmentFromDataPart(part.data, part.mimeType, undefined, pdfMaxBytes);
+                    if (attachment) {
+                        directPdfParts.push(attachment);
                     }
                 } else if (part instanceof vscode.LanguageModelToolCallPart) {
                     const id = part.callId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -285,7 +321,36 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
             // process user messages
             if (role === "user") {
-                if (imageParts.length > 0) {
+                // A PDF is attached only because the user attached it: queued by the
+                // `Attach PDF` command, delivered by VS Code as a data part, or recovered
+                // from the attachment record Copilot Chat keeps for this request (local
+                // windows only). Message text is never scanned for paths.
+                const dragged: PdfAttachment[] = [];
+                if (pdfFromChatStore && joinedText) {
+                    for (const path of await findAttachedPdfPaths(joinedText)) {
+                        const attachment = await readPdfAttachmentByPath(path, pdfMaxBytes);
+                        if (attachment) {
+                            dragged.push(attachment);
+                        }
+                    }
+                }
+                const pdfCandidates = pdfEnabled
+                    ? [
+                        ...(m === messages[lastUserIndex] ? pendingPdf : []),
+                        ...dragged,
+                        ...directPdfParts,
+                    ]
+                    : [];
+                const pdfParts: PdfAttachment[] = [];
+                for (const pdf of pdfCandidates) {
+                    if (attachedPdfPaths.has(pdf.path)) {
+                        continue;
+                    }
+                    attachedPdfPaths.add(pdf.path);
+                    pdfParts.push(pdf);
+                }
+
+                if (imageParts.length > 0 || pdfParts.length > 0) {
                     // multi-modal message
                     const contentArray: ChatMessageContent[] = [];
 
@@ -303,6 +368,14 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
                             image_url: {
                                 url: dataUrl,
                             },
+                        });
+                    }
+
+                    for (const pdf of pdfParts) {
+                        contentArray.push({
+                            type: "input_file",
+                            filename: pdf.filename,
+                            file_data: pdf.file_data,
                         });
                     }
                     out.push({ role, content: contentArray });

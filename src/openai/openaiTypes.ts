@@ -34,13 +34,20 @@ export interface OpenAIChatMessage {
 
 /**
  * Chat message content interface (supports multimodal).
+ *
+ * `input_file` is not a Chat Completions part: it is produced for the Responses
+ * path only and translated into the wire shape by the remap block in provider.ts.
  */
 export interface ChatMessageContent {
-    type: "text" | "image_url";
+    type: "text" | "image_url" | "input_file";
     text?: string;
     image_url?: {
         url: string;
     };
+    /** `input_file.filename` — the base name of the attached PDF. */
+    filename?: string;
+    /** `input_file.file_data` — `data:application/pdf;base64,...`. */
+    file_data?: string;
 }
 
 /**

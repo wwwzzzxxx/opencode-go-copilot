@@ -11,6 +11,11 @@ export interface OpenCodeGoModelItem {
     baseUrl?: string;
     context_length?: number;
     vision?: boolean;
+    /**
+     * Whether the model accepts PDF documents natively (catalog `modalities.input`
+     * contains "pdf"). Only used on the Responses API path.
+     */
+    pdf?: boolean;
     max_tokens?: number;
     // OpenAI new standard parameter
     max_completion_tokens?: number;

@@ -24,6 +24,7 @@ import {
     getCatalogProviderModelEntry,
     getCatalogProviderModelIds,
     inferDefaultReasoningEffort,
+    inferPdf,
     inferReasoningEfforts,
     inferThinkingBudget,
     inferThinkingMode,
@@ -57,6 +58,8 @@ const DEFAULT_MAX_TOKENS = 4096;
 export interface ModelMeta {
     displayName: string;
     vision: boolean;
+    /** Model accepts PDF documents natively (catalog `modalities.input` contains "pdf"). */
+    pdf: boolean;
     thinkingMode: "switchable" | "always" | "adaptive";
     supportedReasoningEfforts: string[];
     defaultReasoningEffort: string;
@@ -127,6 +130,7 @@ function resolveFromCatalog(providerId: ProviderId, modelId: string): ModelMeta 
     return {
         displayName: entry?.name ?? modelId,
         vision: entry ? inferVision(entry) : false,
+        pdf: entry ? inferPdf(entry) : false,
         thinkingMode,
         supportedReasoningEfforts,
         defaultReasoningEffort: entry ? inferDefaultReasoningEffort(entry) : "enabled",
@@ -150,6 +154,7 @@ function applyOverride(meta: ModelMeta, override?: ModelMetaOverride): ModelMeta
     return {
         displayName: override.displayName ?? meta.displayName,
         vision: override.vision ?? meta.vision,
+        pdf: override.pdf ?? meta.pdf,
         thinkingMode: override.thinkingMode ?? meta.thinkingMode,
         supportedReasoningEfforts: override.supportedReasoningEfforts ?? meta.supportedReasoningEfforts,
         defaultReasoningEffort: override.defaultReasoningEffort ?? meta.defaultReasoningEffort,
@@ -359,6 +364,7 @@ export function getCatalogModelConfig(modelId: string): OpenCodeGoModelItem {
         displayName: meta.displayName,
         baseUrl: meta.baseUrl,
         vision: meta.vision,
+        pdf: meta.pdf,
         supportsTemperature: meta.supportsTemperature,
         context_length: meta.contextLength,
         max_completion_tokens: meta.maxOutputTokens,
