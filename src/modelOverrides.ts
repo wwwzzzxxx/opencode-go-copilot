@@ -45,10 +45,6 @@ export interface ModelMetaOverride {
 
 /**
  * Per-model overrides, keyed by model ID.
- *
- * Note: Zen free models share the same namespace (IDs end with "-free") and
- * can be overridden here too — e.g. "minimax-m3-free" if it ever diverges
- * from its Go counterpart.
  */
 export const MODEL_OVERRIDES: Record<string, ModelMetaOverride> = {
     // ── MiniMax series ── served via Anthropic-compatible API; M3 is adaptive-only
@@ -80,12 +76,8 @@ export const MODEL_OVERRIDES: Record<string, ModelMetaOverride> = {
     "muse-spark-1.3-contributor": { apiMode: "openai-responses" as const },
     "muse-spark-1.3-contributor-free": { apiMode: "openai-responses" as const },
 
-    // ── Ox Alpha Free ── Go / Zen 各有一个，ID 不同但名称相同，加后缀区分来源
-    //    Go 侧：ox-alpha-free（opencode-go provider），Zen 侧：x-preview-f-free（opencode provider）
+    // ── Ox Alpha Free ── Go 侧：ox-alpha-free（opencode-go provider）
     "ox-alpha-free": {
         displayName: "Ox Alpha Free (Unlimited) (Go)",
-    },
-    "x-preview-f-free": {
-        displayName: "Ox Alpha Free (Unlimited) (Zen)",
     },
 };

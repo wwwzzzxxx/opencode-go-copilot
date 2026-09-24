@@ -50,7 +50,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		messages: readonly LanguageModelChatRequestMessage[],
 		modelConfig: { includeReasoningInRequest: boolean; vision?: boolean }
 	): Promise<AnthropicMessage[]> {
-		const visionProxyEmpty = (vscode.workspace.getConfiguration("opencodego").get<string>("visionProxyModel", "mimo-v2.5-free")?.trim() ?? "") === "";
+		const visionProxyEmpty = (vscode.workspace.getConfiguration("opencodego").get<string>("visionProxyModel", "qwen-plus-latest")?.trim() ?? "") === "";
 		const modelSupportsVision = modelConfig.vision !== false || visionProxyEmpty;
 		const out: AnthropicMessage[] = [];
 		let imageIndex = 0;

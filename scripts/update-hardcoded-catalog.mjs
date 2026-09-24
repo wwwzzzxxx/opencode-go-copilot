@@ -1,11 +1,10 @@
 /**
  * Refresh the hardcoded catalog snapshot (src/hardcodedModelList.ts).
  *
- * Fetches the official models.dev catalog, extracts the opencode-go and
- * opencode provider sections, and regenerates the snapshot file with full
- * model metadata. Used by the release workflow before compiling so every
- * published VSIX ships a fresh snapshot; the regenerated file is committed
- * together with the version bump when data changed.
+ * Fetches the official models.dev catalog, extracts the opencode-go provider
+ * section, and regenerates the snapshot file with full model metadata. Used by the release workflow before compiling
+ * so every published VSIX ships a fresh snapshot; the regenerated file is
+ * committed together with the version bump when data changed.
  *
  * Non-blocking by design: on fetch failure the existing snapshot is kept and
  * the script exits 0 so the build continues (the snapshot exists precisely
@@ -25,7 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CATALOG_URL = "https://models.dev/catalog.json";
-const PROVIDER_IDS = ["opencode-go", "opencode"];
+const PROVIDER_IDS = ["opencode-go"];
 const OUT_FILE = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
@@ -48,9 +47,9 @@ function renderTs(data, date) {
  * Hardcoded fallback catalog snapshot.
  *
  * Last-resort fallback when both the official models.dev catalog and the
- * configured mirror are unreachable. Contains the complete provider sections
- * for opencode-go (OpenCode Go) and opencode (OpenCode Zen) exactly as
- * published in the official catalog — full model metadata included
+ * configured mirror are unreachable. Contains the complete opencode-go
+ * (OpenCode Go) provider section exactly as published in the official
+ * catalog — full model metadata included
  * (limit, cost, reasoning_options, attachment, modalities, ...), so the
  * fallback behaves like the real catalog instead of a bare ID list.
  *
@@ -66,6 +65,13 @@ export interface HardcodedCatalogData {
     models: Record<string, ModelsDevEntry>;
     providers: Record<string, CatalogProvider>;
 }
+
+/**
+ * Date this snapshot was taken (YYYY-MM-DD). Surfaced to the user when a
+ * refresh has to fall back to this snapshot, so a stale list is never
+ * mistaken for current data.
+ */
+export const HARDCODED_SNAPSHOT_DATE = "${date}";
 
 // Asserted like the runtime catalog JSON: the official snapshot's cost shapes
 // vary between entries (some omit cache_read, some add cache_write), which the
@@ -98,8 +104,7 @@ async function main() {
         console.log("hardcoded catalog: unchanged, nothing to do");
     } else {
         const goCount = Object.keys(providers["opencode-go"].models).length;
-        const zenCount = Object.keys(providers["opencode"].models).length;
-        console.log(`hardcoded catalog: refreshed (opencode-go ${goCount}, opencode ${zenCount}) -> ${path.relative(process.cwd(), OUT_FILE)}`);
+        console.log(`hardcoded catalog: refreshed (opencode-go ${goCount}) -> ${path.relative(process.cwd(), OUT_FILE)}`);
     }
 }
 

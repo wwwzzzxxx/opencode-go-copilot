@@ -16,7 +16,7 @@
     "thinking",
     "git-commit"
   ],
-  "version": "1.0.7",
+  "version": "1.0.10",
   "repository": {
     "type": "git",
     "url": "https://github.com/wwwzzzxxx/opencode-go-copilot"
@@ -229,18 +229,14 @@
         "opencodego.localProxyMode": {
           "type": "string",
           "enum": [
-            "zen",
-            "zen+go",
             "go",
             "none"
           ],
           "enumDescriptions": [
-            "%config.localProxyMode.enum.zen.desc%",
-            "%config.localProxyMode.enum.zenGo.desc%",
             "%config.localProxyMode.enum.go.desc%",
             "%config.localProxyMode.enum.none.desc%"
           ],
-          "default": "zen+go",
+          "default": "go",
           "markdownDescription": "%config.localProxyMode.desc%"
         },
         "opencodego.vpnProxyUrl": {
@@ -333,11 +329,6 @@
           "minimum": 0,
           "maximum": 1,
           "description": "%config.top_p.desc%"
-        },
-        "opencodego.enableZenFreeModels": {
-          "type": "boolean",
-          "default": false,
-          "description": "%config.enableZenFreeModels.desc%"
         },
         "opencodego.maxContextLength": {
           "type": "number",
@@ -502,7 +493,8 @@
     "lint": "eslint",
     "watch": "tsc -watch -p ./",
     "build": "node scripts/build-vsix.mjs",
-    "postinstall": "node scripts/copy-tokenizer.js"
+    "postinstall": "node scripts/copy-tokenizer.js",
+    "test:model-refresh": "npm run compile && node scripts/test-model-refresh-report.mjs"
   },
   "dependencies": {
     "@microsoft/tiktokenizer": "^1.0.10",

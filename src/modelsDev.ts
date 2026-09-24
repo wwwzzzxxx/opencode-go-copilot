@@ -141,6 +141,41 @@ export type CatalogSource = "official" | "mirror" | "hardcoded";
 interface FetchCatalogResult {
     data: CatalogData;
     source: CatalogSource;
+    /** Errors from the fallback chain, in attempt order (official → mirror). */
+    errors: string[];
+}
+
+/**
+ * Outcome of the most recent catalog load. Callers that surface the result to
+ * the user (the manual refresh command) need to know whether the data is live
+ * or a fallback, so "success" is never reported for a stale snapshot.
+ */
+export interface CatalogLoadInfo {
+    source: CatalogSource | "failed";
+    /** When the attempt finished (epoch ms). */
+    timestamp: number;
+    /** Provider model counts that are now installed in the index. */
+    goModels: number;
+    /** True when a previously loaded catalog was kept instead of replaced. */
+    keptPrevious: boolean;
+    /** Errors from the fallback chain, in attempt order. */
+    errors: string[];
+}
+
+let lastLoadInfo: CatalogLoadInfo | null = null;
+
+/** The most recent catalog load outcome, or null if no attempt has finished yet. */
+export function getLastCatalogLoadInfo(): CatalogLoadInfo | null {
+    return lastLoadInfo;
+}
+
+/** Count the models a provider section holds in the given payload. */
+function providerModelCount(data: CatalogData | null, providerId: string): number {
+    if (data?.providers?.[providerId]?.models) {
+        return Object.keys(data.providers[providerId].models).length;
+    }
+    const entry = providersMap?.get(providerId);
+    return entry?.models ? Object.keys(entry.models).length : 0;
 }
 
 /**
@@ -176,6 +211,7 @@ async function fetchJson(
  * mirror (with platform/token headers) → hardcoded catalog snapshot.
  */
 async function fetchCatalog(): Promise<FetchCatalogResult> {
+    const errors: string[] = [];
     const officialStart = Date.now();
     try {
         const { data, bytes } = await fetchJson(CATALOG_URL, OFFICIAL_TIMEOUT_MS);
@@ -184,12 +220,14 @@ async function fetchCatalog(): Promise<FetchCatalogResult> {
             durationMs: Date.now() - officialStart,
             bytes,
         });
-        return { data, source: "official" };
+        return { data, source: "official", errors };
     } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`official: ${message}`);
         logger.warn("modelsDev.fetch.officialFailed", {
             url: CATALOG_URL,
             durationMs: Date.now() - officialStart,
-            error: err instanceof Error ? err.message : String(err),
+            error: message,
         });
     }
 
@@ -207,12 +245,14 @@ async function fetchCatalog(): Promise<FetchCatalogResult> {
                 durationMs: Date.now() - mirrorStart,
                 bytes,
             });
-            return { data, source: "mirror" };
+            return { data, source: "mirror", errors };
         } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            errors.push(`mirror: ${message}`);
             logger.warn("modelsDev.fetch.mirrorFailed", {
                 url: mirror.url,
                 durationMs: Date.now() - mirrorStart,
-                error: err instanceof Error ? err.message : String(err),
+                error: message,
             });
         }
     }
@@ -220,7 +260,7 @@ async function fetchCatalog(): Promise<FetchCatalogResult> {
     logger.warn("modelsDev.fetch.hardcoded", {
         providers: Object.keys(HARDCODED_CATALOG.providers),
     });
-    return { data: HARDCODED_CATALOG, source: "hardcoded" };
+    return { data: HARDCODED_CATALOG, source: "hardcoded", errors };
 }
 
 function rebuildIndex(data: CatalogData): void {
@@ -256,7 +296,7 @@ function rebuildIndex(data: CatalogData): void {
 
 /**
  * Get a provider entry from the catalog by provider ID.
- * @param providerId - Provider ID (e.g. "opencode-go", "opencode")
+ * @param providerId - Provider ID (e.g. "opencode-go")
  */
 export function getCatalogProvider(providerId: string): CatalogProvider | undefined {
     return providersMap?.get(providerId);
@@ -264,7 +304,7 @@ export function getCatalogProvider(providerId: string): CatalogProvider | undefi
 
 /**
  * Get the API base URL for a provider from the catalog.
- * @param providerId - Provider ID (e.g. "opencode-go", "opencode")
+ * @param providerId - Provider ID (e.g. "opencode-go")
  * @param fallbackUrl - Fallback URL if catalog is not loaded or provider not found
  */
 export function getCatalogProviderBaseUrl(providerId: string, fallbackUrl: string): string {
@@ -279,7 +319,7 @@ export function getCatalogProviderBaseUrl(providerId: string, fallbackUrl: strin
  * Get provider-specific model metadata from the catalog.
  * Looks up the model in the specified provider's models section.
  *
- * @param providerId - Provider ID (e.g. "opencode-go", "opencode")
+ * @param providerId - Provider ID (e.g. "opencode-go")
  * @param modelId - Short model ID (e.g. "glm-5", "deepseek-v4-flash")
  * @returns The provider-specific model entry, or undefined if not found.
  */
@@ -294,7 +334,7 @@ export function getCatalogProviderModelEntry(
  * Get all model IDs served by a provider from the catalog.
  * Returns an empty array if the catalog is not loaded or the provider is unknown.
  *
- * @param providerId - Provider ID (e.g. "opencode-go", "opencode")
+ * @param providerId - Provider ID (e.g. "opencode-go")
  */
 export function getCatalogProviderModelIds(providerId: string): string[] {
     const models = providersMap?.get(providerId)?.models;
@@ -392,19 +432,11 @@ export function inferThinkingBudget(entry: ModelsDevEntry): { min?: number; max?
  * warnings so they stand out in the output channel.
  */
 function logLoadSummary(source: CatalogSource | "failed", start: number, data: CatalogData | null): void {
-    const countProviderModels = (providerId: string): number => {
-        if (data?.providers?.[providerId]?.models) {
-            return Object.keys(data.providers[providerId].models).length;
-        }
-        const entry = providersMap?.get(providerId);
-        return entry?.models ? Object.keys(entry.models).length : 0;
-    };
     const payload = {
         source,
         durationMs: Date.now() - start,
         providers: data ? Object.keys(data.providers ?? {}).length : (providersMap?.size ?? 0),
-        goModels: countProviderModels("opencode-go"),
-        zenModels: countProviderModels("opencode"),
+        goModels: providerModelCount(data, "opencode-go"),
     };
     if (source === "official") {
         logger.info("modelsDev.load", payload);
@@ -432,20 +464,34 @@ export async function ensureModelsDevLoaded(): Promise<void> {
 
     const start = Date.now();
     try {
-        const { data, source } = await fetchCatalog();
+        const { data, source, errors } = await fetchCatalog();
         if (source === "hardcoded" && metadataMap !== null) {
             // Keep the previously fetched catalog — it is fresher than the
             // hardcoded list. Only the retry timing is updated.
             cacheTimestamp = now;
             lastLoadFailed = true;
+            lastLoadInfo = {
+                source,
+                timestamp: now,
+                goModels: providerModelCount(null, "opencode-go"),
+                keptPrevious: true,
+                errors,
+            };
             logLoadSummary("hardcoded", start, null);
             return;
         }
         rebuildIndex(data);
         cacheTimestamp = now;
         lastLoadFailed = source !== "official";
+        lastLoadInfo = {
+            source,
+            timestamp: now,
+            goModels: providerModelCount(data, "opencode-go"),
+            keptPrevious: false,
+            errors,
+        };
         logLoadSummary(source, start, data);
-    } catch {
+    } catch (err) {
         // Both sources failed and the hardcoded list is unavailable; keep any
         // existing data and retry later. Should not normally happen.
         if (metadataMap === null) {
@@ -455,8 +501,26 @@ export async function ensureModelsDevLoaded(): Promise<void> {
         }
         cacheTimestamp = now;
         lastLoadFailed = true;
+        lastLoadInfo = {
+            source: "failed",
+            timestamp: now,
+            goModels: providerModelCount(null, "opencode-go"),
+            keptPrevious: true,
+            errors: [err instanceof Error ? err.message : String(err)],
+        };
         logLoadSummary("failed", start, null);
     }
+}
+
+/**
+ * Force the next {@link ensureModelsDevLoaded} call to refetch, while keeping
+ * the currently indexed catalog. A manual refresh must not make the list worse:
+ * if the live catalog is unreachable, the previously fetched data stays usable
+ * instead of being replaced by the built-in snapshot.
+ */
+export function invalidateModelsDevCache(): void {
+    cacheTimestamp = 0;
+    lastLoadFailed = false;
 }
 
 /**

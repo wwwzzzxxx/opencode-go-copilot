@@ -8,6 +8,7 @@ import {
 } from "vscode";
 
 import type { OpenCodeGoModelItem } from "../types";
+import { stripExposedModelId } from "../catalogModels";
 import { pdfAttachmentFromDataPart, readPdfAttachmentByPath, takePendingPdfAttachments, type PdfAttachment } from "../pdf/attach";
 import { findAttachedPdfPaths } from "../pdf/chatStore";
 
@@ -120,7 +121,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
         // Resolve vision proxy setting: empty string means non-vision also streams directly (no ask_image)
         const visionCfg = vscode.workspace.getConfiguration("opencodego");
-        const visionProxyModelCfg = visionCfg.get<string>("visionProxyModel", "mimo-v2.5-free")?.trim() ?? "";
+        const visionProxyModelCfg = visionCfg.get<string>("visionProxyModel", "qwen-plus-latest")?.trim() ?? "";
         const nonVisionDirect = visionProxyModelCfg === "";
         // If direct mode, treat all models as vision for conversion purposes
         const effectiveVision = modelConfig.vision !== false || nonVisionDirect;
@@ -414,12 +415,12 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
         }
 
         // max_tokens / max_completion_tokens (mutually exclusive)
-        // The zen/go gateway (openai-compatible route) only honors `max_tokens`.
+        // The go gateway (openai-compatible route) only honors `max_tokens`.
         // DeepSeek-family models ignore `max_completion_tokens`, which silently
         // falls back to a small server-side default and truncates long reasoning
         // (manifesting as "no response was returned" after thinking drained the
         // budget). For DeepSeek, send the value as `max_tokens`.
-        const isDeepSeekFamily = this._modelId.toLowerCase().startsWith("deepseek-");
+        const isDeepSeekFamily = stripExposedModelId(this._modelId).toLowerCase().startsWith("deepseek-");
         if (um?.max_completion_tokens !== undefined) {
             if (isDeepSeekFamily) {
                 rb.max_tokens = um.max_completion_tokens;

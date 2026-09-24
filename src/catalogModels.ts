@@ -1,15 +1,11 @@
 /**
  * Unified model resolution layer.
  *
- * Every model — OpenCode Go and OpenCode Zen — flows through the same
- * two-layer merge chain:
+ * Every OpenCode Go model flows through the same two-layer merge chain:
  *
  *   1. resolveFromCatalog() — models.dev catalog
  *      (provider entry → global entry → conservative defaults, per field)
  *   2. applyOverride()      — MODEL_OVERRIDES[modelId] wins per field when present
- *
- * Zen and Go only differ in the provider ID and model filtering (-free suffix);
- * all resolution and build logic is shared.
  */
 
 import * as vscode from "vscode";
@@ -33,19 +29,22 @@ import {
     type ModelsDevEntry,
 } from "./modelsDev";
 
-/** Supported provider IDs. */
-export type ProviderId = "opencode-go" | "opencode";
+/**
+ * Supported provider ID. Only OpenCode Go remains: the OpenCode Zen free
+ * tier rejects requests originating outside OpenCode with a 403
+ * FreeTierError. Go-plan free models ("-free" IDs) are served by the Go API
+ * and stay in the picker.
+ */
+export type ProviderId = "opencode-go";
 
-/** Fallback base URLs used when the catalog is not loaded. */
+/** Fallback base URL used when the catalog is not loaded. */
 const FALLBACK_BASE_URLS: Record<ProviderId, string> = {
     "opencode-go": "https://opencode.ai/zen/go/v1/",
-    "opencode": "https://opencode.ai/zen/v1/",
 };
 
-/** Per-provider display metadata (family grouping, name suffix). */
-const PROVIDER_LABELS: Record<ProviderId, { family: string; detail: string; nameSuffix: string }> = {
-    "opencode-go": { family: "OpenCodeGo", detail: "OpenCode Go", nameSuffix: "" },
-    "opencode": { family: "OpenCode Zen", detail: "OpenCode Zen", nameSuffix: " Free" },
+/** Provider display metadata (family grouping, picker detail text). */
+const PROVIDER_LABELS: Record<ProviderId, { family: string; detail: string }> = {
+    "opencode-go": { family: "OpenCodeGo", detail: "OpenCode Go" },
 };
 
 const DEFAULT_CONTEXT_LENGTH = 128000;
@@ -74,13 +73,6 @@ export interface ModelMeta {
     cost: { cache_read: number; input: number; output: number };
 }
 
-/**
- * Zen free models that do not follow the "-free" suffix convention but are
- * free on the OpenCode Zen provider (kept in sync with the models.dev
- * catalog; big-pickle is a long-standing free model with a plain ID).
- */
-const ZEN_FREE_EXTRA_IDS: ReadonlySet<string> = new Set(["big-pickle"]);
-
 function getMaxContextLengthOverride(): number | undefined {
     const v = vscode.workspace.getConfiguration("opencodego").get<number>("maxContextLength", 0);
     if (typeof v === "number" && Number.isFinite(v) && v > 0) return Math.floor(v);
@@ -96,21 +88,11 @@ function applyMaxContextLengthCap(meta: ModelMeta): ModelMeta {
 }
 
 /**
- * Whether a model ID refers to an OpenCode Zen free model:
- * the "-free" suffix convention, or an ID hard-coded as free (see
- * ZEN_FREE_EXTRA_IDS). Everything else is treated as Go.
+ * Resolve the provider for a model ID. Only OpenCode Go remains; kept as a
+ * single-value helper so call sites stay provider-agnostic.
  */
-export function isZenFreeModelId(modelId: string): boolean {
-    return modelId.endsWith("-free") || ZEN_FREE_EXTRA_IDS.has(modelId);
-}
-
-/**
- * Resolve the provider for a model ID.
- * Zen free models follow the "-free" suffix convention (plus a small
- * hard-coded set of free models with plain IDs); everything else is Go.
- */
-export function resolveProviderForModelId(modelId: string): ProviderId {
-    return isZenFreeModelId(modelId) ? "opencode" : "opencode-go";
+export function resolveProviderForModelId(_modelId: string): ProviderId {
+    return "opencode-go";
 }
 
 /**
@@ -248,6 +230,40 @@ function buildReasoningEnum(meta: ModelMeta): {
 }
 
 /**
+ * Prefix applied to model IDs exposed to VS Code (the picker / selectChatModels).
+ *
+ * Bare catalog IDs (e.g. "glm-5.2") can collide with IDs contributed by other
+ * providers, and VS Code cannot tell which provider an ID belongs to. The
+ * exposed ID is namespaced ("go-glm-5.2") while requests to the Go API keep
+ * using the bare ID — see stripExposedModelId(). The display name is
+ * untouched (id and name are separate fields).
+ */
+export const EXPOSED_MODEL_ID_PREFIX = "go-";
+
+/**
+ * Map an exposed picker ID back to the bare catalog ID.
+ * IDs without the prefix pass through unchanged, so bare IDs stored in user
+ * settings (visionProxyModel / commitModel) keep working.
+ */
+export function stripExposedModelId(exposedId: string): string {
+    return exposedId.startsWith(EXPOSED_MODEL_ID_PREFIX)
+        ? exposedId.slice(EXPOSED_MODEL_ID_PREFIX.length)
+        : exposedId;
+}
+
+/**
+ * Map a bare catalog ID to the ID exposed to VS Code.
+ * The vision-proxy alias ("qwen-plus-latest") is not a real model ID and is
+ * left as-is so resolveVisionProxyModelId() can still recognize it.
+ */
+export function toExposedModelId(modelId: string): string {
+    if (modelId === VISION_PROXY_LATEST_ALIAS) {
+        return modelId;
+    }
+    return modelId.startsWith(EXPOSED_MODEL_ID_PREFIX) ? modelId : `${EXPOSED_MODEL_ID_PREFIX}${modelId}`;
+}
+
+/**
  * Special vision proxy model ID that resolves to the newest qwen*-plus model.
  */
 export const VISION_PROXY_LATEST_ALIAS = "qwen-plus-latest";
@@ -274,10 +290,14 @@ function compareVersions(a: string, b: string): number {
  * qwen*-plus model served by the opencode-go provider in the catalog
  * (e.g. qwen3.8-plus over qwen3.7-plus). Any other value is returned unchanged.
  * Falls back to the alias itself when the catalog has no qwen*-plus model.
+ *
+ * The returned ID is the exposed (prefixed) form, since callers pass it to
+ * vscode.lm.selectChatModels({ id }) against the picker list.
  */
 export async function resolveVisionProxyModelId(configuredId: string): Promise<string> {
-    if (configuredId !== VISION_PROXY_LATEST_ALIAS) {
-        return configuredId;
+    const bareConfigured = stripExposedModelId(configuredId.trim());
+    if (bareConfigured !== VISION_PROXY_LATEST_ALIAS) {
+        return toExposedModelId(bareConfigured);
     }
     try {
         await ensureModelsDevLoaded();
@@ -290,7 +310,7 @@ export async function resolveVisionProxyModelId(configuredId: string): Promise<s
                 const vb = (b.match(/^qwen([\d.]+)-plus$/) ?? [])[1] ?? "";
                 return compareVersions(vb, va);
             });
-        return plusModels[0] ?? VISION_PROXY_LATEST_ALIAS;
+        return toExposedModelId(plusModels[0] ?? VISION_PROXY_LATEST_ALIAS);
     } catch {
         return VISION_PROXY_LATEST_ALIAS;
     }
@@ -306,19 +326,21 @@ export function isModelDeprecated(providerId: ProviderId, modelId: string): bool
 
 /**
  * Build a LanguageModelChatInformation entry (model picker) for a model.
+ *
+ * The exposed `id` carries the "go-" prefix so VS Code can tell our models
+ * apart from same-named IDs of other providers; `name` keeps the bare
+ * display name. All request-side lookups strip the prefix again.
  */
 export function buildCatalogModelInfo(providerId: ProviderId, modelId: string): LanguageModelChatInformation {
     const meta = resolveModelMeta(providerId, modelId);
     const label = PROVIDER_LABELS[providerId];
     // Deprecated models keep a visible marker when shown (opt-in setting)
     const deprecatedPrefix = meta.status === "deprecated" ? l10n("[Depr] ") : "";
-    // Zen free models: append " Free" only when the catalog name doesn't already carry it
-    const nameSuffix = label.nameSuffix && !/\bfree\b/i.test(meta.displayName) ? label.nameSuffix : "";
-    const name = `${deprecatedPrefix}${meta.displayName}${nameSuffix}`;
+    const name = `${deprecatedPrefix}${meta.displayName}`;
     const { enumValues, enumItemLabels, enumDescriptions, defaultEffort } = buildReasoningEnum(meta);
 
     return {
-        id: modelId,
+        id: toExposedModelId(modelId),
         name,
         detail: label.detail,
         tooltip: label.detail,
@@ -351,15 +373,18 @@ export function buildCatalogModelInfo(providerId: ProviderId, modelId: string): 
 
 /**
  * Build the OpenCodeGoModelItem request config for a model.
- * The provider (Go vs Zen) is resolved from the model ID.
+ *
+ * Accepts either the exposed ("go-…") or the bare catalog ID; the resolved
+ * config (and the `model` field sent to the Go API) always uses the bare ID.
  */
 export function getCatalogModelConfig(modelId: string): OpenCodeGoModelItem {
-    const providerId = resolveProviderForModelId(modelId);
-    const meta = resolveModelMeta(providerId, modelId);
-    const override = MODEL_OVERRIDES[modelId];
+    const bareId = stripExposedModelId(modelId);
+    const providerId = resolveProviderForModelId(bareId);
+    const meta = resolveModelMeta(providerId, bareId);
+    const override = MODEL_OVERRIDES[bareId];
 
     const config: OpenCodeGoModelItem = {
-        id: modelId,
+        id: bareId,
         owned_by: "opencode",
         displayName: meta.displayName,
         baseUrl: meta.baseUrl,

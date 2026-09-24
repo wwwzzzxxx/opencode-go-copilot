@@ -29,6 +29,14 @@ class Logger {
     }
 
     /**
+     * Reveal the output channel. Used by notifications that tell the user to
+     * look at the log for details.
+     */
+    show(): void {
+        this._outputChannel?.show();
+    }
+
+    /**
      * Sanitize headers by redacting sensitive values.
      */
     sanitizeHeaders(headers: Record<string, string>): Record<string, string> {

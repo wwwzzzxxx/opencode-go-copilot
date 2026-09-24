@@ -29,10 +29,8 @@ import { hasVpnRules, shouldUseVpnProxy } from "./vpnProxy";
 /** Port used for the local proxy + SSH RemoteForward tunnel. */
 export const PROXY_PORT = 8900;
 
-/** The two upstream providers used by OpenCode Go models. */
+/** The upstream provider used by OpenCode Go models. */
 const UPSTREAMS: Record<string, { host: string; pathPrefix: string; https: boolean }> = {
-    // Free / zen models (opencode provider)
-    opencode: { host: "opencode.ai", pathPrefix: "/zen/v1", https: true },
     // Paid / go models (opencode-go provider)
     "opencode-go": { host: "opencode.ai", pathPrefix: "/zen/go/v1", https: true },
 };
@@ -68,32 +66,26 @@ export function isRemote(): boolean {
  * The base URL to use for a given model id.
  * In the remote host it points at the SSH tunnel when reachable, otherwise directly upstream.
  */
-export type LocalProxyMode = "zen" | "zen+go" | "go" | "none";
+export type LocalProxyMode = "go" | "none";
 
 /** Read the user-configured local proxy mode. */
 export function getLocalProxyMode(): LocalProxyMode {
     const cfg = vscode.workspace.getConfiguration("opencodego");
-    const mode = cfg.get<LocalProxyMode>("localProxyMode", "zen+go");
-    return mode === "zen" || mode === "zen+go" || mode === "go" || mode === "none" ? mode : "zen+go";
+    const mode = cfg.get<LocalProxyMode>("localProxyMode", "go");
+    return mode === "go" || mode === "none" ? mode : "go";
 }
 
-/** Whether the given provider group is routed through the local proxy per the current mode. */
-function shouldProxyProvider(providerId: "opencode" | "opencode-go"): boolean {
+/** Whether the Go provider is routed through the local proxy per the current mode. */
+function shouldProxyProvider(_providerId: "opencode-go"): boolean {
     const mode = getLocalProxyMode();
     if (mode === "none") {
         return false;
     }
-    if (mode === "zen") {
-        return providerId === "opencode";
-    }
-    if (mode === "go") {
-        return providerId === "opencode-go";
-    }
-    return true; // zen+go
+    return true; // go
 }
 
 export async function resolveBaseUrl(
-    providerId: "opencode" | "opencode-go",
+    providerId: "opencode-go",
     directUrl: string,
     modelId?: string
 ): Promise<string> {
@@ -284,12 +276,10 @@ async function handleProxyRequest(
         res.end(JSON.stringify({ ok: true, port: PROXY_PORT }));
         return;
     }
-    // Determine upstream from the path prefix: /zen/v1/... or /zen/go/v1/...
+    // Determine upstream from the path prefix: /zen/go/v1/...
     let upstream: (typeof UPSTREAMS)[keyof typeof UPSTREAMS] | undefined;
     if (url.pathname.startsWith("/zen/go/v1")) {
         upstream = UPSTREAMS["opencode-go"];
-    } else if (url.pathname.startsWith("/zen/v1")) {
-        upstream = UPSTREAMS.opencode;
     } else {
         // Default: treat as go upstream.
         upstream = UPSTREAMS["opencode-go"];

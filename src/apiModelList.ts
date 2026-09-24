@@ -19,6 +19,30 @@ let cachedModelIds: string[] | null = null;
 let cacheTimestamp = 0;
 let lastFetchSuccess = false;
 
+/** Why the last fetch did not produce fresh data. */
+export type ApiListFailure = "no_api_key" | "fetch_failed" | null;
+
+/**
+ * Outcome of the most recent /models fetch, for callers that report the result
+ * to the user. `usedStale` means the returned IDs come from an older successful
+ * fetch, so they may not reflect what the server currently serves.
+ */
+export interface ApiListInfo {
+    success: boolean;
+    failure: ApiListFailure;
+    error?: string;
+    usedStale: boolean;
+    count: number;
+    timestamp: number;
+}
+
+let lastListInfo: ApiListInfo | null = null;
+
+/** The most recent /models fetch outcome, or null if no attempt has finished yet. */
+export function getLastApiListInfo(): ApiListInfo | null {
+    return lastListInfo;
+}
+
 /**
  * Resolve the API base URL from the catalog, with fallback.
  */
@@ -77,6 +101,13 @@ export async function getApiModelIds(apiKey: string | undefined): Promise<Set<st
 
     if (!apiKey) {
         // No API key — use stale cache or return empty
+        lastListInfo = {
+            success: false,
+            failure: "no_api_key",
+            usedStale: cachedModelIds !== null,
+            count: cachedModelIds?.length ?? 0,
+            timestamp: now,
+        };
         if (cachedModelIds !== null) {
             return new Set(cachedModelIds);
         }
@@ -92,10 +123,25 @@ export async function getApiModelIds(apiKey: string | undefined): Promise<Set<st
         cachedModelIds = ids;
         cacheTimestamp = now;
         lastFetchSuccess = true;
+        lastListInfo = {
+            success: true,
+            failure: null,
+            usedStale: false,
+            count: ids.length,
+            timestamp: now,
+        };
         return new Set(ids);
-    } catch {
+    } catch (err) {
         // API call failed — use stale cache if available
         lastFetchSuccess = false;
+        lastListInfo = {
+            success: false,
+            failure: "fetch_failed",
+            error: err instanceof Error ? err.message : String(err),
+            usedStale: cachedModelIds !== null,
+            count: cachedModelIds?.length ?? 0,
+            timestamp: now,
+        };
         if (cachedModelIds !== null) {
             return new Set(cachedModelIds);
         }
@@ -118,4 +164,13 @@ export function clearApiModelCache(): void {
     cachedModelIds = null;
     cacheTimestamp = 0;
     lastFetchSuccess = false;
+}
+
+/**
+ * Force the next {@link getApiModelIds} call to refetch, while keeping the
+ * currently cached IDs. A manual refresh must not lose the last known list
+ * when the API is unreachable.
+ */
+export function invalidateApiModelCache(): void {
+    cacheTimestamp = 0;
 }

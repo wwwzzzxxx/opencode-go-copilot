@@ -21,8 +21,8 @@ import { resolveBaseUrl, clearTunnelProbeCache } from "./proxyManager";
 import { createVpnAwareFetch } from "./vpnProxy";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
-import { getCatalogModelConfig, resolveProviderForModelId, resolveVisionProxyModelId } from "./catalogModels";
-import { l10nFormat } from "./localize";
+import { getCatalogModelConfig, resolveVisionProxyModelId, stripExposedModelId } from "./catalogModels";
+import { l10n, l10nFormat } from "./localize";
 import { countMessageTokens, textTokenLength } from "./provideToken";
 import { updateContextStatusBar, recordUsage, updateCumulativeTooltip, updateStatusBarWithApiPrompt } from "./statusBar";
 import { OpenaiApi } from "./openai/openaiApi";
@@ -35,7 +35,6 @@ import type { StoredImage } from "./vision/types";
 import { createVisionToolHistoryPart } from "./vision/historyPart";
 import type { VisionToolHistoryEntry } from "./vision/historyCodec";
 import { logger } from "./logger";
-import { l10n } from "./localize";
 
 /**
  * Strip binary payloads from a request body before it goes into the log.
@@ -170,6 +169,26 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
     private _lastRequestTime: number | null = null;
 
     /**
+     * Fired when the exposed model set changes. VS Code caches the list returned
+     * by provideLanguageModelChatInformation, so without this event the picker
+     * keeps showing models that were current when it last asked.
+     */
+    private readonly _onDidChangeLanguageModelChatInformation = new vscode.EventEmitter<void>();
+
+    readonly onDidChangeLanguageModelChatInformation = this._onDidChangeLanguageModelChatInformation.event;
+
+    /**
+     * Tell VS Code the model list changed and has to be fetched again.
+     */
+    notifyModelsChanged(): void {
+        this._onDidChangeLanguageModelChatInformation.fire();
+    }
+
+    dispose(): void {
+        this._onDidChangeLanguageModelChatInformation.dispose();
+    }
+
+    /**
      * Create a provider using the given secret storage for the API key.
      */
     constructor(
@@ -234,7 +253,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
         let dispatchFetch: typeof fetch;
 
         try {
-            // Resolve model config from the unified catalog layer (Go or Zen by ID suffix).
+            // Resolve model config from the unified catalog layer.
             const config = vscode.workspace.getConfiguration();
             // Shallow copy to avoid mutating the shared resolved config.
             let um: OpenCodeGoModelItem | undefined = { ...getCatalogModelConfig(model.id) };
@@ -294,8 +313,8 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
             // Determine API mode from model config (default: openai)
             const apiMode = um?.apiMode || "openai";
-            const providerId = resolveProviderForModelId(model.id);
-            const directBaseUrl = um?.baseUrl || getCatalogProviderBaseUrl(providerId, providerId === "opencode" ? "https://opencode.ai/zen/v1/" : "https://opencode.ai/zen/go/v1/");
+            const providerId = "opencode-go" as const;
+            const directBaseUrl = um?.baseUrl || getCatalogProviderBaseUrl(providerId, "https://opencode.ai/zen/go/v1/");
             // In the remote (SSH) host, route through the SSH tunnel to the local proxy when reachable.
             // VPN models (muse/gpt/...) are forced through the tunnel regardless of localProxyMode.
             const baseUrl = await resolveBaseUrl(providerId, directBaseUrl, model.id);
@@ -382,9 +401,13 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     }
                 });
             }
+            // The exposed picker ID carries the "go-" prefix; the Go API only
+            // knows bare catalog IDs. getCatalogModelConfig() strips the prefix
+            // and um.id is the bare ID sent in request bodies.
+            const bareModelId = stripExposedModelId(model.id);
             // Create undici fetch with custom bodyTimeout (extends TCP idle timeout during streaming)
             // and VPN-aware routing for overseas models.
-            dispatchFetch = createVpnAwareFetch(model.id, requestTimeoutMs);
+            dispatchFetch = createVpnAwareFetch(bareModelId, requestTimeoutMs);
             // Tunnel fallback: if we are using the SSH tunnel and it fails (local proxy not running),
             // clear the probe cache and retry with direct URL once. This makes single-window SSH
             // more robust and provides a better error if direct also fails.
@@ -427,7 +450,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                 modelApiKey,
                 apiMode,
                 um?.headers,
-                deriveOpencodeSessionId(model.id, messages)
+                deriveOpencodeSessionId(bareModelId, messages)
             );
             logger.debug("request.headers", {
                 headers: logger.sanitizeHeaders(requestHeaders as Record<string, string>),
@@ -436,7 +459,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
             if (apiMode === "anthropic") {
                 // Anthropic API mode
-                const anthropicApi = new AnthropicApi(model.id);
+                const anthropicApi = new AnthropicApi(bareModelId);
                 // Accumulate incremental usage during streaming; flushed once
                 // after the stream ends so counters/tooltip update only when
                 // the current response has finished (no mid-stream flicker or
@@ -459,7 +482,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
                 // requestBody
                 let requestBody: AnthropicRequestBody = {
-                    model: um?.id ?? model.id,
+                    model: um?.id ?? bareModelId,
                     messages: anthropicMessages,
                     stream: true,
                 };
@@ -523,10 +546,9 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     recordUsage(anthropicUsage, um?.cost);
                     updateStatusBarWithApiPrompt(this.statusBarItem);
                 }
-                // Count the call toward the free model daily quota display
             } else {
                 // OpenAI Chat Completions API mode
-                const openaiApi = new OpenaiApi(model.id);
+                const openaiApi = new OpenaiApi(bareModelId);
                 // OpenAI usage chunks are cumulative; keep the last (final)
                 // report and flush once after the stream ends so counters and
                 // the tooltip only update when the response has finished.
@@ -543,7 +565,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
                 // requestBody
                 let requestBody: Record<string, unknown> = {
-                    model: um?.id ?? model.id,
+                    model: um?.id ?? bareModelId,
                     messages: openaiMessages,
                     stream: true,
                     stream_options: { include_usage: true },
@@ -553,7 +575,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
 
                 // Send chat request with retry — choose endpoint by apiMode
                 // (openai-responses models like muse/gpt are served via /responses;
-                //  zen/go rejects muse images on /chat/completions with a 400)
+                //  go rejects muse images on /chat/completions with a 400)
                 const url = apiMode === "openai-responses"
                     ? `${BASE_URL.replace(/\/+$/, "")}/responses`
                     : `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
@@ -754,7 +776,6 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     recordUsage(openaiUsage, um?.cost);
                     updateStatusBarWithApiPrompt(this.statusBarItem);
                 }
-                // Count the call toward the free model daily quota display
             }
 
             // Fallback: if API did not return usage data, use client-side calculation for native indicator
@@ -802,19 +823,6 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     throw new Error(l10n("The connection was closed by the server. The generation took too long. Please try again or request shorter content."));
                 }
                 throw new Error(l10n("Request timed out. The generation took too long. You can increase the timeout in settings (opencodego.requestTimeout)."));
-            }
-
-            // Detect Zen free model expiration: a 401 from a Zen free model
-            // means the free promotion has ended (error text may vary - don't match on it)
-            if (errMessage.includes("[401]") && resolveProviderForModelId(model.id) === "opencode") {
-                const zenConfig = getCatalogModelConfig(model.id);
-                const zenModelName = zenConfig.displayName ?? model.id;
-                logger.error("request.error", {
-                    modelId: model.id,
-                    error: "zen_free_model_expired",
-                    errorMessage: errMessage,
-                });
-                throw new Error(l10nFormat("{0} is no longer available as a free model. Please use a different model.", zenModelName));
             }
 
             // Detect image content moderation rejection from the API
@@ -1047,7 +1055,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     });
 
                     const body: Record<string, unknown> = {
-                        model: params.um?.id ?? params.model.id,
+                        model: params.um?.id ?? stripExposedModelId(params.model.id),
                         messages: currentMessages,
                         stream: true,
                     };
@@ -1162,7 +1170,7 @@ export class OpenCodeGoChatModelProvider implements LanguageModelChatProvider {
                     });
 
                     const body: Record<string, unknown> = {
-                        model: params.um?.id ?? params.model.id,
+                        model: params.um?.id ?? stripExposedModelId(params.model.id),
                         messages: currentMessages,
                         stream: true,
                         stream_options: { include_usage: true },

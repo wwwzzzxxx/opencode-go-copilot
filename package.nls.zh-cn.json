@@ -35,7 +35,6 @@
 	"config.modelPreset.desc": "当前模型预设 ID。使用「设置模型预设」命令选择预设。设为「custom」可使用「opencodego.temperature」和「opencodego.top_p」手动输入的值。",
 	"config.temperature.desc": "模型温度 (0.0 - 2.0)。与「opencodego.top_p」配对使用。仅在「opencodego.modelPreset」设为「custom」时生效。",
 	"config.top_p.desc": "模型 top_p (0.0 - 1.0)。与「opencodego.temperature」配对使用。仅在「opencodego.modelPreset」设为「custom」时生效。",
-	"config.enableZenFreeModels.desc": "启用 OpenCode Zen 免费模型并将其添加到模型选择器中。开启后，将显示 models.dev 目录中 OpenCode Zen 服务商的免费模型（ID 以 -free 结尾，如 Big Pickle、DeepSeek V4 Flash Free、MiniMax M3 Free）。Zen 免费模型暂不支持用于 Git 提交消息生成。更改此设置后需要重新加载 VS Code 才能生效。",
 	"config.enableAutoModelDiscovery.desc": "启用自动模型发现。开启后，扩展将从 API 获取实际模型列表，过滤模型选择器仅显示服务器上可用的模型。不在 API 列表中的模型将被隐藏。模型列表本身来自 models.dev 目录，并按周期自动刷新。关闭后将显示目录中的全部模型，不受 API 可用性影响。",
 	"config.showDeprecatedModels.desc": "在模型选择器中显示已弃用模型。关闭（默认）时，models.dev 目录中标记为已弃用的模型将被隐藏。",
 	"config.modelsDevUpdateInterval.desc": "当「opencodego.enableAutoModelDiscovery」启用时，检查 API 模型更新的缓存 TTL（毫秒）。默认值: 60000（1分钟）。最小值: 30000（30秒）。",
@@ -63,9 +62,7 @@
 	"config.retry.statusCodes.desc": "除默认状态码（429、500、502、503、504）之外，额外触发自动重试的 HTTP 状态码列表。默认值: []。",
 	"config.enableCommitGeneration.desc": "在源代码管理面板显示生成提交消息按钮。关闭后，魔法棒按钮和命令面板入口将被隐藏。",
 	"config.localProxyMode.desc": "SSH Remote 时经本机转发的本地代理路由模式（使请求源 IP 为本机）。",
-	"config.localProxyMode.enum.zen.desc": "仅将 OpenCode Zen（免费）经本地代理转发",
-	"config.localProxyMode.enum.zenGo.desc": "同时将 Zen 与 Go 经本地代理转发（默认）",
-	"config.localProxyMode.enum.go.desc": "仅将 OpenCode Go（付费）经本地代理转发",
+	"config.localProxyMode.enum.go.desc": "仅将 OpenCode Go（付费）经本地代理转发（默认）",
 	"config.localProxyMode.enum.none.desc": "关闭本地代理（配置了 VPN 模型的仍走隧道）",
 	"config.vpnProxyUrl.desc": "海外模型 VPN 代理的 HTTP 代理地址（如 Clash 的 http://127.0.0.1:7890）。",
 	"config.vpnProxyModels.desc": "走 VPN 代理的模型 ID 子串。",
@@ -78,6 +75,6 @@
 	"walkthrough.showModels.title": "显示 OpenCode Go 模型",
 	"walkthrough.showModels.description": "如果模型被隐藏，请打开 VS Code 的语言模型管理器并显示 OpenCode Go 模型。\n[打开语言模型管理](command:workbench.action.chat.manage)",
 	"walkthrough.advancedSettings.title": "探索高级设置",
-	"walkthrough.advancedSettings.description": "自定义模型预设、启用 Zen 免费模型、配置视觉代理等。\n[打开设置](command:opencodego.openSettings)",
+	"walkthrough.advancedSettings.description": "自定义模型预设、配置视觉代理等。\n[打开设置](command:opencodego.openSettings)",
 	"config.verboseLogging.desc": "启用详细日志以便排查问题（详细请求诊断）。默认值: false。"
 }

@@ -8,7 +8,8 @@ import type { ModelPreset } from "./types";
 import { VersionManager } from "./versionManager";
 import { abortCommitGeneration, generateCommitMsg } from "./gitCommit/commitMessageGenerator";
 import { TokenizerManager } from "./tokenizer/tokenizerManager";
-import { prepareLanguageModelChatInformation, resetAutoDiscoveryState } from "./provideModel";
+import { prepareLanguageModelChatInformation, invalidateAutoDiscovery, getLastDiscoveryReport, getDiscoveredModelIds } from "./provideModel";
+import { HARDCODED_SNAPSHOT_DATE } from "./hardcodedModelList";
 import { maybeStartLocalProxy } from "./proxyManager";
 import { pickPdfFileToAttach } from "./pdf/attach";
 import { setChatSessionRoot } from "./pdf/chatStore";
@@ -42,7 +43,10 @@ export function activate(context: vscode.ExtensionContext) {
     const provider = new OpenCodeGoChatModelProvider(context.secrets, tokenCountStatusBarItem);
 
     // Register the OpenCode Go provider under the vendor id used in package.json
-    vscode.lm.registerLanguageModelChatProvider("opencodego", provider);
+    context.subscriptions.push(
+        vscode.lm.registerLanguageModelChatProvider("opencodego", provider),
+        provider
+    );
 
     // Management command to configure API key
     context.subscriptions.push(
@@ -68,14 +72,105 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // manually trigger model list update command
+    // Manually trigger model list update command.
+    // The result is reported from the real outcome: a refresh that fell back to
+    // the built-in snapshot, or that could not confirm the server's model list,
+    // is not a success. Previously this always claimed success, so a refresh
+    // performed while the live catalog was unreachable silently served an old
+    // model list (missing recently added models) with a green toast.
     context.subscriptions.push(
         vscode.commands.registerCommand("opencodego.updateModelList", async () => {
             try {
-                // dummy silent option, not used
-                resetAutoDiscoveryState();
+                const before = getDiscoveredModelIds();
+                invalidateAutoDiscovery();
                 await prepareLanguageModelChatInformation({ silent: true }, new vscode.CancellationTokenSource().token, context.secrets);
-                vscode.window.showInformationMessage(l10n("OpenCode Go model list updated successfully."));
+
+                const report = getLastDiscoveryReport();
+                if (!report || report.ids.length === 0) {
+                    logger.error("models.update.failed", { reason: "no_catalog", report });
+                    vscode.window.showErrorMessage(l10n("Failed to update OpenCode Go model list: no model catalog available. See output for details."));
+                    return;
+                }
+
+                const live = report.catalogSource === "official" || report.catalogSource === "mirror";
+                const reason = report.catalogErrors[0] ?? "unknown error";
+
+                // Diff against the previously exposed list; an empty "before" means
+                // VS Code had not asked for models yet, so nothing is "new".
+                const haveBefore = before.length > 0;
+                const added = haveBefore ? report.ids.filter((id) => !before.includes(id)) : [];
+                const removed = haveBefore ? before.filter((id) => !report.ids.includes(id)) : [];
+                const summarized = added.slice(0, 6).join(", ") + (added.length > 6 ? l10nFormat(" and {0} more", added.length - 6) : "");
+
+                logger.info("models.update.result", {
+                    source: report.catalogSource,
+                    keptPreviousCatalog: report.keptPreviousCatalog,
+                    catalogCount: report.catalogModelCount,
+                    shownCount: report.ids.length,
+                    apiListOk: report.apiListOk,
+                    apiFilterApplied: report.apiFilterApplied,
+                    added,
+                    removed,
+                    errors: report.catalogErrors,
+                });
+
+                if (!live) {
+                    // Live catalog unreachable: say so, and name the fallback data.
+                    const message = report.keptPreviousCatalog
+                        ? l10nFormat("Could not fetch the online model catalog ({0}). Kept the previously fetched catalog ({1} models).", reason, report.ids.length)
+                        : l10nFormat("Could not fetch the online model catalog ({0}). Using the built-in snapshot ({1} models, dated {2}) — recently added models may be missing.", reason, report.ids.length, HARDCODED_SNAPSHOT_DATE);
+                    const choice = await vscode.window.showWarningMessage(message, l10n("Show Log"));
+                    if (choice) {
+                        logger.show();
+                    }
+                    return;
+                }
+
+                // Live catalog, but the server's own model list is not confirmed.
+                if (!report.apiListOk && report.apiFilterApplied && report.apiListStale) {
+                    // An older server list is filtering the catalog: that can hide
+                    // models the server started serving since it was fetched.
+                    const choice = await vscode.window.showWarningMessage(
+                        l10nFormat("The server model list could not be refreshed ({0}); the list is filtered by an earlier fetch ({1} models shown), so newly added models may be missing.", report.apiListError ?? l10n("request failed"), report.ids.length),
+                        l10n("Show Log")
+                    );
+                    if (choice) {
+                        logger.show();
+                    }
+                } else if (!report.apiListOk && !report.apiFilterApplied) {
+                    if (report.apiListFailure === "no_api_key") {
+                        vscode.window.showInformationMessage(
+                            l10nFormat("Catalog updated ({0} models). The server model list was not checked: no API key configured.", report.ids.length)
+                        );
+                    } else {
+                        const choice = await vscode.window.showWarningMessage(
+                            l10nFormat("Catalog updated ({0} models), but the server's model list could not be fetched ({1}). The list may include models the server does not serve.", report.ids.length, report.apiListError ?? l10n("request failed")),
+                            l10n("Show Log")
+                        );
+                        if (choice) {
+                            logger.show();
+                        }
+                    }
+                } else if (added.length > 0) {
+                    vscode.window.showInformationMessage(
+                        l10nFormat("Model list updated: {0} models available. New: {1}", report.ids.length, summarized)
+                    );
+                } else if (haveBefore) {
+                    vscode.window.showInformationMessage(
+                        l10nFormat("Model list updated: {0} models available, no new models.", report.ids.length)
+                    );
+                } else {
+                    // Nothing to diff against: VS Code had not asked for models yet.
+                    vscode.window.showInformationMessage(
+                        l10nFormat("Model list updated: {0} models available.", report.ids.length)
+                    );
+                }
+
+                // A new list is only useful if VS Code re-reads it; the picker
+                // otherwise keeps the copy it fetched earlier.
+                if (added.length > 0 || removed.length > 0 || live) {
+                    provider.notifyModelsChanged();
+                }
             } catch (error) {
                 logger.error("models.update.failed", { error: String(error) });
                 vscode.window.showErrorMessage(l10n("Failed to update OpenCode Go model list. See output for details."));
