@@ -66,7 +66,7 @@
 
 > Go 服务商当前收录模型包括但不限于：`glm-5/5.1/5.2`、`kimi-k3/k2.5/k2.6/k2.7-code`、`deepseek-v4-pro/flash`、`mimo-v2-pro/omni/v2.5-pro/v2.5`、`minimax-m3/m2.7/m2.5`、`qwen3.5/3.6/3.7-plus`、`qwen3.7-max`、`qwen3.8-max`、`gpt-5.6-luna`、`grok-4.5`、`hy3` 等。实际显示取决于目录收录与 API 可用性。
 > Go 套餐内的免费模型（`-free` 后缀，如 `ox-alpha-free`、`space-bunny-free`）由 Go API 正常提供，保留在选择器与快照中。
-> 兜底快照：`src/hardcodedModelList.ts` 内置官方目录快照（快照日期见文件内 `HARDCODED_SNAPSHOT_DATE`），含 opencode-go 的**完整模型元数据**（limit、cost、reasoning_options、attachment、modalities 等），仅作官方目录与镜像均不可达时的最后防线。⚠️【发布前必做】每次准备发布（升版/打包）之前必须先运行 `node scripts/update-hardcoded-catalog.mjs` 把快照刷到最新，确认有变化就随版本一起提交；发布构建（`.github/workflows/release.yml`）也会自动刷新该快照（拉取官方目录 → 提取 opencode-go 服务商 → 重写文件），失败时保留旧快照不阻断构建；数据有变化时随版本号变更在同一 commit 推送。
+> 兜底快照：`src/hardcodedModelList.ts` 内置官方目录快照（快照日期见文件内 `HARDCODED_SNAPSHOT_DATE`），含 opencode-go 的**完整模型元数据**（limit、cost、reasoning_options、attachment、modalities 等），仅作官方目录与镜像均不可达时的最后防线。⚠️【发布前必做】每次准备发布之前必须按顺序做完两步：①运行 `node scripts/update-hardcoded-catalog.mjs` 把快照刷到最新，确认有变化就随版本一起提交；②升版本号（`npm version patch --no-git-tag-version`，不打 git tag——marketplace 拒收同版本号，不升版发布不了）；发布构建（`.github/workflows/release.yml`）也会自动刷新该快照（拉取官方目录 → 提取 opencode-go 服务商 → 重写文件），失败时保留旧快照不阻断构建；数据有变化时随版本号变更在同一 commit 推送。
 
 #### 思考强度自动推导（`reasoning_options`）
 
@@ -1525,9 +1525,13 @@ npx tsc --noEmit
 # 持续监视模式
 npm run watch
 
-# ⚠️ 每次准备发布之前，必须先运行 `node scripts/update-hardcoded-catalog.mjs` 刷新硬编码目录快照
-# （发布构建也会自动执行，但本地先刷可提前确认模型列表变化并随版本一起提交）
+# ⚠️ 每次准备发布之前，必须按顺序做完这两步：
+# 1. 先运行 `node scripts/update-hardcoded-catalog.mjs` 刷新硬编码目录快照
+#    （发布构建也会自动执行，但本地先刷可提前确认模型列表变化并随版本一起提交）
+# 2. 再升版本号（`npm version patch --no-git-tag-version`，不要 git tag——发布走 GitHub Release 触发 CI，
+#    marketplace 拒绝与已发布版本同号的包，不升版发布不了）
 node scripts/update-hardcoded-catalog.mjs
+npm version patch --no-git-tag-version
 
 # 打包 VSIX
 npm run build
